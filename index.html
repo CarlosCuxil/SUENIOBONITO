@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#171A33">
+<title>Sueño</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#171A33; --deep:#10122A; --surface:#21254A; --line:#30355F;
+  --paper:#ECE6D6; --mute:#9A97B8; --amber:#E6A85C; --teal:#78B3A6; --lav:#A89BE0; --rose:#D98C8C;
+  --serif:"Fraunces", Georgia, "Times New Roman", serif;
+  --sans:"Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+*,*::before,*::after{box-sizing:inherit}
+html,body{height:100%;margin:0}
+body{background:var(--ink);color:var(--paper);font:16px/1.5 var(--sans);-webkit-tap-highlight-color:transparent;overscroll-behavior:none}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+h1,h2,h3{font-family:var(--serif);font-weight:500;margin:0;letter-spacing:-.01em}
+h1{font-size:2rem;line-height:1.15}
+h2{font-size:1.35rem;line-height:1.25}
+h3{font-size:1.05rem}
+p{margin:0}
+.muted{color:var(--mute)}
+.small{font-size:.875rem}
+
+.view{display:none;min-height:100%}
+.view.on{display:block}
+.wrap{max-width:560px;margin:0 auto;padding:20px 20px 112px}
+
+/* Navegación inferior */
+#nav{position:fixed;left:0;right:0;bottom:0;display:flex;justify-content:center;gap:4px;
+  background:rgba(16,18,42,.94);backdrop-filter:blur(10px);border-top:1px solid var(--line);
+  padding:8px 12px calc(8px + env(safe-area-inset-bottom,0px));z-index:5}
+#nav button{flex:1;max-width:160px;background:none;border:0;padding:10px 8px;border-radius:12px;color:var(--mute)}
+#nav button[aria-current="true"]{color:var(--paper);background:var(--surface)}
+#nav.hide{display:none}
+
+/* Botones */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;border-radius:999px;padding:14px 22px;font-weight:700}
+.btn-main{background:var(--paper);color:var(--ink);width:100%;font-size:1.05rem;padding:18px}
+.btn-soft{background:var(--surface);color:var(--paper)}
+.btn-line{background:none;border:1px solid var(--line);color:var(--paper)}
+.btn-danger{background:none;border:1px solid var(--rose);color:var(--rose)}
+.link{background:none;border:0;color:var(--mute);padding:8px 0}
+
+/* Inicio */
+.greet{margin:12px 0 22px}
+.greet p{margin-top:6px}
+.lastnight{background:var(--deep);border-radius:24px;padding:20px;margin-bottom:18px;border:1px solid var(--line)}
+.lastnight .row{display:flex;justify-content:space-between;align-items:flex-end;gap:12px}
+.score{font-family:var(--serif);font-weight:300;font-size:3.4rem;line-height:1}
+.score small{font-size:1.2rem;color:var(--mute)}
+.chart{width:100%;display:block}
+.section{margin-top:30px}
+.section > h2{margin-bottom:12px}
+.hist{list-style:none;margin:0;padding:0}
+.hist li button{width:100%;display:flex;justify-content:space-between;align-items:center;gap:12px;background:none;border:0;border-bottom:1px solid var(--line);padding:14px 2px;text-align:left}
+.hist .q{font-family:var(--serif);font-size:1.4rem}
+.empty{padding:22px;border:1px dashed var(--line);border-radius:16px;color:var(--mute)}
+
+/* Formularios */
+.field{padding:16px 0;border-bottom:1px solid var(--line)}
+.field:last-child{border-bottom:0}
+.field label.t{display:block;font-weight:700;margin-bottom:4px}
+.inrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
+input[type=time],select,input[type=number]{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px;min-height:44px}
+input[type=time]{font-family:var(--serif);font-size:1.6rem;padding:6px 14px}
+input[type=range]{width:100%;accent-color:var(--amber)}
+.switch{position:relative;width:52px;height:30px;flex:none}
+.switch input{opacity:0;width:100%;height:100%;margin:0;position:absolute;cursor:pointer}
+.switch span{position:absolute;inset:0;border-radius:99px;background:var(--line);transition:background .2s;pointer-events:none}
+.switch span::after{content:"";position:absolute;width:24px;height:24px;left:3px;top:3px;border-radius:50%;background:var(--paper);transition:transform .2s}
+.switch input:checked + span{background:var(--amber)}
+.switch input:checked + span::after{transform:translateX(22px)}
+.switch input:focus-visible + span{outline:2px solid var(--amber);outline-offset:2px}
+.headrow{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.chip{border:1px solid var(--line);background:none;border-radius:999px;padding:8px 14px;color:var(--mute)}
+.chip[aria-pressed="true"]{background:var(--lav);border-color:var(--lav);color:var(--ink)}
+.note{background:var(--surface);border-radius:14px;padding:14px 16px;margin:18px 0;font-size:.95rem}
+.note ul{margin:6px 0 0;padding-left:18px}
+.topbar{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.topbar .link{font-size:1rem;color:var(--paper)}
+
+/* Noche */
+#v-night{position:fixed;inset:0;background:#000;color:#3B3858;user-select:none;-webkit-user-select:none;touch-action:none;z-index:20}
+#clock{position:absolute;left:50%;top:38%;transform:translate(-50%,-50%);text-align:center;transition:left 2s,top 2s}
+#clock .t{font-family:var(--serif);font-weight:300;font-size:5.2rem;line-height:1;color:#45416A}
+#clock .s{margin-top:10px;font-size:.9rem;color:#34314F}
+#level{display:inline-block;width:6px;height:6px;border-radius:50%;background:#34314F;margin-right:6px;vertical-align:middle;transition:background .2s}
+#hold{position:absolute;left:50%;bottom:calc(40px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);width:96px;height:96px;border-radius:50%;
+  border:0;background:none;color:#4E4A76;display:grid;place-items:center}
+#hold svg{position:absolute;inset:0}
+#hold span{font-size:.75rem;width:70px;text-align:center;line-height:1.25}
+#nightmsg{position:absolute;left:20px;right:20px;top:calc(20px + env(safe-area-inset-top,0px));text-align:center;font-size:.85rem;color:#4E4A76}
+
+/* Alarma */
+#v-alarm{position:fixed;inset:0;z-index:30;background:linear-gradient(180deg,#2A2F5C 0%,#5C4E7A 55%,#C98A5A 100%);text-align:center}
+#v-alarm .in{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:14px;padding:30px}
+#v-alarm .t{font-family:var(--serif);font-size:5rem;font-weight:300;line-height:1}
+#v-alarm .btns{display:flex;flex-direction:column;gap:12px;width:100%;max-width:320px;margin-top:30px}
+
+/* Ánimo */
+.moods{display:flex;gap:12px;margin:24px 0}
+.moods button{flex:1;border:1px solid var(--line);background:var(--surface);border-radius:18px;padding:18px 6px;font-size:2rem;line-height:1}
+.moods button small{display:block;font-size:.85rem;margin-top:8px;color:var(--mute)}
+
+/* Detalle */
+.hero{padding:6px 0 18px}
+.hero .score{font-size:4.6rem}
+.verdict{font-family:var(--serif);font-size:1.25rem;margin-top:4px}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);border-radius:18px;overflow:hidden;margin:18px 0}
+.stats div{background:var(--ink);padding:14px 16px}
+.stats b{display:block;font-family:var(--serif);font-weight:500;font-size:1.35rem}
+.stats span{color:var(--mute);font-size:.85rem}
+.graph{background:var(--deep);border-radius:20px;padding:16px 12px 10px;border:1px solid var(--line)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:.8rem;color:var(--mute);margin-top:8px;padding:0 4px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.counts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.counts span{background:var(--surface);border-radius:999px;padding:6px 12px;font-size:.875rem}
+.tips{list-style:none;padding:0;margin:0}
+.tips li{padding:14px 0 14px 16px;border-left:3px solid var(--amber);margin-bottom:10px;background:linear-gradient(90deg,rgba(230,168,92,.07),transparent 70%);border-radius:0 12px 12px 0;padding-right:12px}
+.tips li b{display:block;margin-bottom:2px}
+.clips{list-style:none;padding:0;margin:0}
+.clips li{padding:12px 0;border-bottom:1px solid var(--line)}
+.clips audio{width:100%;height:40px;margin-top:6px}
+
+/* Tendencias */
+.seg{display:inline-flex;background:var(--surface);border-radius:999px;padding:4px;margin-bottom:16px}
+.seg button{border:0;background:none;border-radius:999px;padding:8px 16px;color:var(--mute)}
+.seg button[aria-pressed="true"]{background:var(--paper);color:var(--ink)}
+.impact{list-style:none;padding:0;margin:0}
+.impact li{display:flex;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
+.up{color:var(--teal)} .down{color:var(--rose)}
+
+/* Medidor de prueba */
+.meter{height:12px;background:var(--surface);border-radius:99px;overflow:hidden;margin-top:10px}
+.meter i{display:block;height:100%;width:0;background:var(--teal);transition:width .1s}
+
+#toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--paper);color:var(--ink);
+  padding:12px 18px;border-radius:12px;font-weight:700;opacity:0;pointer-events:none;transition:opacity .25s;z-index:50;max-width:90%;text-align:center}
+#toast.on{opacity:1}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<!-- INICIO -->
+<section id="v-home" class="view on">
+  <div class="wrap">
+    <div class="greet">
+      <h1 id="greet">Buenas noches</h1>
+      <p class="muted" id="greet-sub"></p>
+    </div>
+    <div id="last"></div>
+    <button class="btn btn-main" id="go-setup">Preparar la noche</button>
+    <div class="section">
+      <h2>Noches anteriores</h2>
+      <ul class="hist" id="hist"></ul>
+    </div>
+  </div>
+</section>
+
+<!-- TENDENCIAS -->
+<section id="v-trends" class="view">
+  <div class="wrap">
+    <h1 style="margin:12px 0 18px">Tendencias</h1>
+    <div class="seg" role="group" aria-label="Rango">
+      <button data-r="7" aria-pressed="true">7 noches</button>
+      <button data-r="30" aria-pressed="false">30 noches</button>
+      <button data-r="0" aria-pressed="false">Todas</button>
+    </div>
+    <div id="trends"></div>
+  </div>
+</section>
+
+<!-- AJUSTES -->
+<section id="v-settings" class="view">
+  <div class="wrap">
+    <h1 style="margin:12px 0 10px">Ajustes</h1>
+    <div class="field">
+      <label class="t" for="s-goal">Meta de sueño</label>
+      <p class="muted small">Se usa para la calificación y para sugerirte hora de acostarte.</p>
+      <div class="inrow"><input type="number" id="s-goal" min="5" max="11" step="0.5" style="width:96px"> <span>horas</span></div>
+    </div>
+    <div class="field">
+      <label class="t" for="s-sens">Sensibilidad del micrófono</label>
+      <p class="muted small">Súbela si casi no detecta nada; bájala si tu cuarto tiene ruido (ventilador, calle).</p>
+      <div class="inrow"><select id="s-sens"><option value="baja">Baja</option><option value="media">Media</option><option value="alta">Alta</option></select></div>
+    </div>
+    <div class="field">
+      <span class="t" style="font-weight:700">Probar micrófono</span>
+      <p class="muted small">Ronca, habla o tose cerca del cel para ver si lo detecta.</p>
+      <div class="meter"><i id="meter"></i></div>
+      <p class="small muted" id="test-out" style="margin-top:8px">Sin probar</p>
+      <div class="inrow"><button class="btn btn-soft" id="test-btn">Empezar prueba</button></div>
+    </div>
+    <div class="field">
+      <span class="t" style="font-weight:700">Tus datos</span>
+      <p class="muted small">Todo se guarda solo en este celular. Exporta un respaldo de vez en cuando.</p>
+      <div class="inrow">
+        <button class="btn btn-soft" id="exp">Exportar respaldo</button>
+        <button class="btn btn-line" id="imp">Importar respaldo</button>
+        <input type="file" id="imp-file" accept="application/json" hidden>
+      </div>
+      <div class="inrow"><button class="btn btn-danger" id="wipe">Borrar todo</button></div>
+    </div>
+    <div class="note">
+      <b>Para que funcione bien</b>
+      <ul>
+        <li>Deja la app abierta toda la noche; si cambias de app o bloqueas el cel, Android corta el micrófono.</li>
+        <li>Conecta el cargador y baja el brillo al mínimo.</li>
+        <li>Pon el cel en la mesa de noche, a menos de un metro de tu cabeza.</li>
+        <li>Las fases de sueño se estiman por sonido y movimiento; no es un estudio médico.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- PREPARAR NOCHE -->
+<section id="v-setup" class="view">
+  <div class="wrap">
+    <div class="topbar"><button class="link" data-back>← Volver</button></div>
+    <h1>Preparar la noche</h1>
+    <p class="muted" id="bed-hint" style="margin-top:6px"></p>
+
+    <div class="field">
+      <div class="headrow">
+        <div><label class="t" for="a-on">Despertador inteligente</label>
+        <p class="muted small">Te despierta en sueño ligero, dentro de la ventana antes de tu hora.</p></div>
+        <label class="switch"><input type="checkbox" id="a-on"><span></span></label>
+      </div>
+      <div class="inrow" id="a-opts">
+        <input type="time" id="a-time" aria-label="Hora de despertar">
+        <select id="a-win" aria-label="Ventana">
+          <option value="0">Hora exacta</option><option value="10">Ventana de 10 min</option>
+          <option value="20">Ventana de 20 min</option><option value="30">Ventana de 30 min</option><option value="45">Ventana de 45 min</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label class="t" for="aid">Sonido para dormir</label>
+      <p class="muted small">Se apaga solo, bajando el volumen poco a poco.</p>
+      <div class="inrow">
+        <select id="aid">
+          <option value="ninguno">Ninguno</option><option value="blanco">Ruido blanco</option>
+          <option value="rosa">Ruido rosa</option><option value="cafe">Ruido café</option>
+          <option value="lluvia">Lluvia</option><option value="olas">Olas</option>
+        </select>
+        <select id="aid-min" aria-label="Duración">
+          <option value="15">15 min</option><option value="30">30 min</option><option value="45">45 min</option><option value="60">60 min</option>
+        </select>
+        <button class="btn btn-line" id="aid-try" type="button">Escuchar</button>
+      </div>
+      <div class="inrow"><label for="aid-vol" class="small muted">Volumen</label><input type="range" id="aid-vol" min="0.05" max="1" step="0.05"></div>
+    </div>
+
+    <div class="field">
+      <span class="t" style="font-weight:700">Notas de hoy</span>
+      <p class="muted small">Con el tiempo verás en Tendencias cómo afectan tu sueño.</p>
+      <div class="chips" id="tags"></div>
+    </div>
+
+    <div class="note">Conecta el cargador, baja el brillo y deja la app abierta. Para terminar, mantén presionado el botón de abajo.</div>
+    <button class="btn btn-main" id="start">Empezar a dormir</button>
+  </div>
+</section>
+
+<!-- NOCHE -->
+<section id="v-night" class="view" aria-label="Grabando la noche">
+  <div id="nightmsg"></div>
+  <div id="clock"><div class="t" id="ck">00:00</div><div class="s"><span id="level"></span><span id="ck-s"></span></div></div>
+  <button id="hold" aria-label="Mantén presionado para terminar">
+    <svg viewBox="0 0 96 96" aria-hidden="true"><circle cx="48" cy="48" r="44" fill="none" stroke="#22203A" stroke-width="3"/>
+      <circle id="hold-ring" cx="48" cy="48" r="44" fill="none" stroke="#8A7FC8" stroke-width="3" stroke-linecap="round"
+        stroke-dasharray="276.5" stroke-dashoffset="276.5" transform="rotate(-90 48 48)"/></svg>
+    <span>Mantén para despertar</span>
+  </button>
+</section>
+
+<!-- ALARMA -->
+<section id="v-alarm" class="view">
+  <div class="in">
+    <p id="al-why">Buenos días</p>
+    <div class="t" id="al-time"></div>
+    <div class="btns">
+      <button class="btn btn-main" id="al-stop">Despertar</button>
+      <button class="btn btn-soft" id="al-snooze" style="background:rgba(23,26,51,.45)">Posponer 9 min</button>
+    </div>
+  </div>
+</section>
+
+<!-- ÁNIMO -->
+<section id="v-mood" class="view">
+  <div class="wrap" style="padding-top:60px">
+    <h1>¿Cómo te despertaste?</h1>
+    <div class="moods">
+      <button data-m="1">😩<small>Cansado</small></button>
+      <button data-m="2">😐<small>Normal</small></button>
+      <button data-m="3">😊<small>Descansado</small></button>
+    </div>
+    <button class="link" data-m="0">Saltar</button>
+  </div>
+</section>
+
+<!-- DETALLE -->
+<section id="v-detail" class="view">
+  <div class="wrap" id="detail"></div>
+</section>
+
+<nav id="nav" aria-label="Secciones">
+  <button data-tab="v-home" aria-current="true">Hoy</button>
+  <button data-tab="v-trends" aria-current="false">Tendencias</button>
+  <button data-tab="v-settings" aria-current="false">Ajustes</button>
+</nav>
+<div id="toast" role="status"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
