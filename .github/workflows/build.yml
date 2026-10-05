@@ -11,6 +11,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      UPLOAD_KEYSTORE_B64: ${{ secrets.UPLOAD_KEYSTORE_B64 }}
+      UPLOAD_STORE_PASSWORD: ${{ secrets.UPLOAD_STORE_PASSWORD }}
+      UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+      UPLOAD_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -21,24 +26,40 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.7'
+          gradle-version: '8.11.1'
 
-      - name: Compilar
+      - name: Compilar APK (para instalar directo en tu cel)
         run: gradle :app:assembleRelease --no-daemon --stacktrace
 
       - name: Preparar APK
         run: cp app/build/outputs/apk/release/app-release.apk Sueno.apk
 
+      - name: Compilar AAB firmado (para Play Store)
+        if: env.UPLOAD_KEYSTORE_B64 != ''
+        run: |
+          echo "$UPLOAD_KEYSTORE_B64" | base64 -d > app/upload.jks
+          gradle :app:bundleRelease -PplaySign --no-daemon --stacktrace
+          cp app/build/outputs/bundle/release/app-release.aab Sueno-PlayStore.aab
+          rm -f app/upload.jks
+
       - uses: actions/upload-artifact@v4
         with:
-          name: Sueno-apk
-          path: Sueno.apk
+          name: Sueno
+          path: |
+            Sueno.apk
+            Sueno-PlayStore.aab
+          if-no-files-found: warn
 
       - name: Publicar en Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: Sueño v1.0.${{ github.run_number }}
-          body: Descarga Sueno.apk en tu Android e instálalo.
-          files: Sueno.apk
+          tag_name: v1.1.${{ github.run_number }}
+          name: Sueño v1.1.${{ github.run_number }}
+          body: |
+            Sueno.apk: descárgalo en tu Android e instálalo.
+            Sueno-PlayStore.aab: el archivo que se sube a Google Play Console (solo aparece si configuraste la llave).
+          files: |
+            Sueno.apk
+            Sueno-PlayStore.aab
+          fail_on_unmatched_files: false
           make_latest: true
