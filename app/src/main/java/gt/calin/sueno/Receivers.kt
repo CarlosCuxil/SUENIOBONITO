@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Icon
 import java.util.Calendar
+import java.util.Locale
 
 /** Respaldo: si el servicio murió, la alarma igual suena. */
 class AlarmReceiver : BroadcastReceiver() {
@@ -64,21 +65,32 @@ object Reminder {
         am.cancel(pi(ctx))
         if (!s.optBoolean("reminderOn", false)) return
         val parts = s.optString("reminderTime", "21:45").split(":")
-        val h = parts.getOrNull(0)?.toIntOrNull() ?: 21
-        val m = parts.getOrNull(1)?.toIntOrNull() ?: 45
+        val h0 = parts.getOrNull(0)?.toIntOrNull() ?: 21
+        val m0 = parts.getOrNull(1)?.toIntOrNull() ?: 45
         val daysArr = s.optJSONArray("reminderDays")
         val days = HashSet<Int>()
         if (daysArr != null) for (i in 0 until daysArr.length()) days.add(daysArr.optInt(i))
         if (days.isEmpty()) (0..6).forEach { days.add(it) }
+        val plan = s.optJSONObject("planTimes")
         val now = System.currentTimeMillis()
         val c = Calendar.getInstance()
-        c.set(Calendar.HOUR_OF_DAY, h)
-        c.set(Calendar.MINUTE, m)
-        c.set(Calendar.SECOND, 0)
-        c.set(Calendar.MILLISECOND, 0)
         for (k in 0..7) {
-            val dow = c.get(Calendar.DAY_OF_WEEK) - 1 // 0 = domingo
-            if (c.timeInMillis > now + 30_000 && days.contains(dow)) {
+            val key = String.format(Locale.US, "%04d-%02d-%02d", c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1, c.get(Calendar.DAY_OF_MONTH))
+            val planned = plan?.optString(key, "") ?: ""
+            var h = h0
+            var m = m0
+            var allowed = days.contains(c.get(Calendar.DAY_OF_WEEK) - 1)
+            if (planned.contains(":")) {
+                val pp = planned.split(":")
+                h = pp[0].toIntOrNull() ?: h0
+                m = pp[1].toIntOrNull() ?: m0
+                allowed = true
+            }
+            c.set(Calendar.HOUR_OF_DAY, h)
+            c.set(Calendar.MINUTE, m)
+            c.set(Calendar.SECOND, 0)
+            c.set(Calendar.MILLISECOND, 0)
+            if (c.timeInMillis > now + 30_000 && allowed) {
                 scheduleAt(ctx, c.timeInMillis)
                 return
             }

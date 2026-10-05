@@ -9,6 +9,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.os.HandlerThread
 import android.media.AudioAttributes
 import android.os.Build
 import android.os.Handler
@@ -20,6 +25,8 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.sqrt
 
 class SleepService : Service() {
 
@@ -78,6 +85,27 @@ class SleepService : Service() {
     private var vib: Vibrator? = null
     private val clipState = HashMap<String, LongArray>() // tipo -> [cantidad, último]
     private var lastNotif = 0L
+
+    // Modo colchón (acelerómetro)
+    private var mattress = false
+    private var sensorThread: HandlerThread? = null
+    private var accelListener: SensorEventListener? = null
+    private val mvMinute = AtomicInteger(0)
+    private val moveSecs = ArrayDeque<Long>()
+    @Volatile private var moving = false
+
+    // Anti-ronquido
+    private var antiSnore = "off"
+    private val nudges = ArrayList<Long>()
+    private val recentSnores = ArrayDeque<Long>()
+    private var episodeNudges = 0
+    private var lastSnoreAt = 0L
+    @Volatile private var mutedUntil = 0L
+
+    // Amanecer en pantalla
+    private var sunrise = false
+    @Volatile private var sunriseShown = false
+    private var nap = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -185,6 +213,15 @@ class SleepService : Service() {
         wakeTs = a?.optLong("wakeTs", 0L) ?: 0L
         win = a?.optInt("win", 0) ?: 0
         alarmSet = a?.optString("set", "") ?: ""
+        mattress = c.optBoolean("mattress", false)
+        antiSnore = c.optString("antiSnore", "off")
+        sunrise = c.optBoolean("sunrise", false)
+        nap = c.optBoolean("nap", false)
+        synchronized(nudges) { nudges.clear() }
+        recentSnores.clear(); episodeNudges = 0; lastSnoreAt = 0L; mutedUntil = 0L
+        sunriseShown = false
+        mvMinute.set(0)
+        synchronized(moveSecs) { moveSecs.clear() }
 
         goForeground(true, buildRecNotif())
         val pm = getSystemService(PowerManager::class.java)
@@ -205,6 +242,7 @@ class SleepService : Service() {
             }
         }
         Store.cleanOldClips(this, Store.settings(this).optInt("cleanDays", 30))
+        if (mattress) startAccel()
         recThread = Thread { recordLoop() }.apply {
             priority = Thread.MAX_PRIORITY
             start()
@@ -250,7 +288,7 @@ class SleepService : Service() {
                 pre.add(buf, read)
                 mSum += an.db; mN++
                 if (an.db > mPeak) mPeak = an.db
-                if (!ringing) {
+                if (!ringing && now >= mutedUntil) {
                     det.step(an.db, an.lr, an.vr, now) { e ->
                         onEvent(e)
                         if (clip == null) clip = maybeClip(e, pre)
@@ -291,6 +329,96 @@ class SleepService : Service() {
     private fun onEvent(e: Ev) {
         synchronized(events) { events.add(e) }
         counts[e.type] = (counts[e.type] ?: 0) + 1
+        if (e.type == "ronquido" && antiSnore != "off") checkSnoreNudge(e.t)
+    }
+
+    /** Si roncas seguido, un sonido suave o vibración para que cambies de posición. */
+    private fun checkSnoreNudge(t: Long) {
+        if (t - lastSnoreAt > 10 * 60_000L) episodeNudges = 0
+        lastSnoreAt = t
+        recentSnores.addLast(t)
+        while (recentSnores.isNotEmpty() && t - recentSnores.first() > 40_000L) recentSnores.removeFirst()
+        val lastNudge = synchronized(nudges) { nudges.lastOrNull() ?: 0L }
+        if (recentSnores.size >= 4 && t - lastNudge > 3 * 60_000L && episodeNudges < 3 && t - start > 20 * 60_000L) {
+            episodeNudges++
+            recentSnores.clear()
+            synchronized(nudges) { nudges.add(System.currentTimeMillis()) }
+            mutedUntil = System.currentTimeMillis() + 5000
+            val strength = Store.settings(this).optDouble("antiSnoreLevel", 0.5)
+            if (antiSnore == "vibracion") {
+                try {
+                    val v: Vibrator? = if (Build.VERSION.SDK_INT >= 31) getSystemService(VibratorManager::class.java)?.defaultVibrator
+                    else @Suppress("DEPRECATION") (getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)
+                    v?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 180, 140, 180, 140, 180), -1))
+                } catch (_: Exception) {
+                }
+            } else {
+                Nudge.play(strength)
+            }
+        }
+    }
+
+    /* ---------------- Modo colchón ---------------- */
+
+    private fun startAccel() {
+        val sm = getSystemService(SensorManager::class.java) ?: return
+        val acc = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
+        val th = HandlerThread("sueno-acc").apply { start() }
+        sensorThread = th
+        val grav = FloatArray(3)
+        var init = false
+        var secStart = 0L
+        var secMax = 0.0
+        var floor = 0.05
+        val l = object : SensorEventListener {
+            override fun onSensorChanged(ev: SensorEvent) {
+                val x = ev.values[0]; val y = ev.values[1]; val z = ev.values[2]
+                if (!init) {
+                    grav[0] = x; grav[1] = y; grav[2] = z; init = true; return
+                }
+                grav[0] = 0.92f * grav[0] + 0.08f * x
+                grav[1] = 0.92f * grav[1] + 0.08f * y
+                grav[2] = 0.92f * grav[2] + 0.08f * z
+                val dx = x - grav[0]; val dy = y - grav[1]; val dz = z - grav[2]
+                val m = sqrt((dx * dx + dy * dy + dz * dz).toDouble())
+                val now = System.currentTimeMillis()
+                if (now - secStart >= 1000) {
+                    if (secStart > 0) {
+                        val thr = maxOf(0.06, floor * 3.5)
+                        if (secMax > thr) {
+                            mvMinute.incrementAndGet()
+                            synchronized(moveSecs) {
+                                moveSecs.addLast(now)
+                                while (moveSecs.isNotEmpty() && now - moveSecs.first() > 5 * 60_000L) moveSecs.removeFirst()
+                            }
+                            moving = true
+                        } else {
+                            moving = false
+                            floor = floor * 0.98 + secMax * 0.02
+                        }
+                    }
+                    secStart = now; secMax = 0.0
+                }
+                if (m > secMax) secMax = m
+            }
+
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+        accelListener = l
+        sm.registerListener(l, acc, SensorManager.SENSOR_DELAY_UI, Handler(th.looper))
+    }
+
+    private fun stopAccel() {
+        val l = accelListener ?: return
+        try { getSystemService(SensorManager::class.java)?.unregisterListener(l) } catch (_: Exception) {}
+        accelListener = null
+        sensorThread?.quitSafely()
+        sensorThread = null
+    }
+
+    private fun recentMoveSecs(ms: Long): Int {
+        val now = System.currentTimeMillis()
+        synchronized(moveSecs) { return moveSecs.count { now - it <= ms } }
     }
 
     private fun maybeClip(e: Ev, pre: Preroll): ClipWriter? {
@@ -315,13 +443,18 @@ class SleepService : Service() {
         val prev = synchronized(minutes) { minutes.lastOrNull() }
         val a = if (n > 0) sum / n else prev?.get(0) ?: -60.0
         val p = if (n > 0) peak else a
-        synchronized(minutes) { minutes.add(doubleArrayOf(round1(a), round1(p))) }
+        val mv = mvMinute.getAndSet(0).toDouble()
+        synchronized(minutes) { minutes.add(doubleArrayOf(round1(a), round1(p), mv)) }
         save("recording")
         updateRecNotif()
     }
 
     private fun checkAlarm(now: Long) {
         if (!alarmOn || ringing || wakeTs == 0L) return
+        if (sunrise && !sunriseShown && now >= wakeTs - win * 60_000L - 15 * 60_000L) {
+            sunriseShown = true
+            main.post { showSunrise() }
+        }
         if (now >= wakeTs) {
             main.post { ring("Es tu hora") }
             return
@@ -335,8 +468,25 @@ class SleepService : Service() {
                     if (e.type != "ronquido" && e.type != "posible") act++
                 }
             }
+            if (mattress && recentMoveSecs(3 * 60_000L) >= 6) act += 2
             if (act >= 2) main.post { ring("Estabas en sueño ligero") }
         }
+    }
+
+    private fun showSunrise() {
+        if (ringing) return
+        val full = Notif.openApp(this, "sunrise", 12)
+        val n = Notification.Builder(this, Notif.CH_ALARM)
+            .setSmallIcon(R.drawable.ic_stat_moon)
+            .setContentTitle("Amaneciendo")
+            .setContentText("Tu alarma suena pronto")
+            .setCategory(Notification.CATEGORY_ALARM)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setFullScreenIntent(full, true)
+            .setContentIntent(full)
+            .setOnlyAlertOnce(true)
+            .build()
+        try { nm.notify(Notif.N_SUNRISE, n) } catch (_: Exception) {}
     }
 
     fun onBackupAlarm() {
@@ -361,6 +511,7 @@ class SleepService : Service() {
         ringWhy = why
         if (rangAt == 0L) rangAt = System.currentTimeMillis()
         NoiseMixer.stop()
+        nm.cancel(Notif.N_SUNRISE)
         val ramp = if (cfg.optBoolean("ramp", true)) 90 else 0
         AlarmPlayer.start(cfg.optString("alarmSound", "amanecer"), ramp)
         if (cfg.optBoolean("vibrate", true)) startVibration()
@@ -369,6 +520,7 @@ class SleepService : Service() {
     }
 
     private fun silence() {
+        nm.cancel(Notif.N_SUNRISE)
         AlarmPlayer.stop()
         try { vib?.cancel() } catch (_: Exception) {}
         nm.cancel(Notif.N_ALARM)
@@ -436,6 +588,7 @@ class SleepService : Service() {
         silence()
         NoiseMixer.stop()
         cancelBackup()
+        stopAccel()
         if (recording) {
             recording = false
             try { recThread?.join(4000) } catch (_: Exception) {}
@@ -459,7 +612,15 @@ class SleepService : Service() {
 
     private fun nightJson(status: String): JSONObject {
         val mins = JSONArray()
-        synchronized(minutes) { for (m in minutes) mins.put(JSONArray().put(m[0]).put(m[1])) }
+        synchronized(minutes) {
+            for (m in minutes) {
+                val r = JSONArray().put(m[0]).put(m[1])
+                if (m.size > 2) r.put(m[2].toInt())
+                mins.put(r)
+            }
+        }
+        val nd = JSONArray()
+        synchronized(nudges) { for (t in nudges) nd.put(t) }
         val evs = JSONArray()
         synchronized(events) { for (e in events) evs.put(e.json()) }
         val o = JSONObject()
@@ -476,6 +637,11 @@ class SleepService : Service() {
             .put("aid", cfg.optJSONObject("aid") ?: JSONObject.NULL)
             .put("mood", JSONObject.NULL)
             .put("native", true)
+            .put("mattress", mattress)
+            .put("antiSnore", antiSnore)
+            .put("nudges", nd)
+            .put("nap", nap)
+            .put("caffeine", if (cfg.has("caffeine")) cfg.optDouble("caffeine", 0.0) else JSONObject.NULL)
         if (alarmOn || rangAt > 0) {
             o.put(
                 "alarm", JSONObject()
@@ -518,6 +684,11 @@ class SleepService : Service() {
             .put("wave", w)
             .put("alarm", JSONObject().put("on", alarmOn).put("wakeTs", wakeTs).put("win", win).put("set", alarmSet))
             .put("sounds", NoiseMixer.stateJson())
+            .put("mattress", mattress)
+            .put("moving", moving)
+            .put("nudges", synchronized(nudges) { nudges.size })
+            .put("sunrise", sunriseShown)
+            .put("nap", nap)
             .toString()
     }
 

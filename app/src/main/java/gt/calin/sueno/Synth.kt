@@ -318,3 +318,33 @@ object AlarmPlayer {
         }
     }
 }
+
+/** Sonido suave para el anti-ronquido: tres pulsos graves que no despiertan. */
+object Nudge {
+    private const val SR = 22050
+
+    fun play(strength: Double) {
+        Thread {
+            val track = try { buildTrack(SR, AudioAttributes.USAGE_MEDIA) } catch (_: Exception) { return@Thread }
+            val total = (SR * 2.4).toInt()
+            val buf = ShortArray(total)
+            val vol = 0.12 + 0.35 * strength.coerceIn(0.0, 1.0)
+            for (i in 0 until total) {
+                val t = i.toDouble() / SR
+                val c = t % 0.8
+                val env = if (c < 0.5) sin(PI * c / 0.5) else 0.0
+                val v = (sin(2 * PI * 196 * t) + 0.4 * sin(2 * PI * 294 * t)) * env * env * vol
+                buf[i] = (v.coerceIn(-1.0, 1.0) * 32767).toInt().toShort()
+            }
+            try {
+                track.play()
+                track.write(buf, 0, buf.size)
+                Thread.sleep(2600)
+                track.stop()
+            } catch (_: Exception) {
+            } finally {
+                track.release()
+            }
+        }.start()
+    }
+}

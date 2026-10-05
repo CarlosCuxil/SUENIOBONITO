@@ -18,6 +18,8 @@ const DEF = {
   breatheBefore: false, breathTech: '478', breathVib: true, breathVoice: false,
   reminderOn: false, reminderTime: '21:45', reminderDays: [0, 1, 2, 3, 4],
   saveClips: true, cleanDays: 30, customTags: [], lastTags: [],
+  mattress: false, sunrise: false, mission: 'ninguna', antiSnore: 'off', antiSnoreLevel: .5,
+  caffeineLog: [], city: null, breathCount: 0, badges: [], plan: null, planTimes: {}, planDone: false,
 };
 let S = { ...DEF, ...J(N.getSettings(), {}) };
 function saveS() { N.setSettings(JSON.stringify(S)); }
@@ -31,11 +33,14 @@ const tagIcon = t => (TAGS.find(x => x[0] === t) || MORNING.find(x => x[0] === t
 
 /* ---------- Datos ---------- */
 let cache = null;
-function nights() {
-  if (!cache) cache = J(N.listNights(), []).filter(n => n.status === 'done' && n.summary).sort((a, b) => b.start - a.start);
-  return cache;
+let allCache = null;
+function allNights() {
+  if (!allCache) allCache = J(N.listNights(), []).filter(n => n.status === 'done' && n.summary).sort((a, b) => b.start - a.start);
+  return allCache;
 }
-function invalidate() { cache = null; }
+function nights() { if (!cache) cache = allNights().filter(n => !n.nap); return cache; }
+function naps() { return allNights().filter(n => n.nap); }
+function invalidate() { cache = null; allCache = null; }
 function getNight(id) { return J(N.getNight(id), null); }
 function saveNight(n) { N.saveNight(JSON.stringify(n)); invalidate(); }
 function finalize(id, extra = {}) {
@@ -151,7 +156,7 @@ function hypSvg(n, W, H, compact) {
     for (const i of s.snoreIdx || []) { if (i - prev > 2) { if (a !== null) segs.push([a, prev]); a = i; } prev = i; }
     if (a !== null) segs.push([a, prev]);
     segs.forEach(([x0, x1]) => o += `<rect class="fadein" x="${X(x0)}" y="${bot + 6}" width="${Math.max(3, X(x1 + 1) - X(x0))}" height="${sn - 2}" rx="2" fill="#E6A85C"/>`);
-    (s.marks || []).forEach(m => o += `<circle class="fadein" cx="${X(m.i)}" cy="${bot + 11}" r="3.5" fill="${m.type === 'tos' ? '#D98C8C' : '#A89BE0'}"/>`);
+    (s.marks || []).forEach(m => o += `<circle class="fadein" cx="${X(m.i)}" cy="${bot + 11}" r="${m.type === 'pausa' ? 2.6 : 3.5}" fill="${m.type === 'tos' ? '#D98C8C' : m.type === 'pausa' ? '#ECE6D6' : '#A89BE0'}"/>`);
     const first = new Date(n.start); first.setMinutes(0, 0, 0); first.setHours(first.getHours() + 1);
     const hrs = L / 60, every = cw / hrs >= 38 ? 1 : 2;
     for (let t = first.getTime(); t < n.start + L * 60000; t += every * 3600e3) {
@@ -232,8 +237,10 @@ function go(v, p = {}, opt = {}) {
   current = { v, p };
   show(v, p, opt);
 }
+const CHROME = { recording: '#000000', sunrise: '#05060F', alarm: '#2A2F5C', breathe: '#1B2538' };
 function show(v, p, opt = {}) {
   $$('.view').forEach(el => { el.classList.remove('on'); });
+  if (N.setChrome) N.setChrome(CHROME[v] || '#171A33');
   const el = $('#v-' + v);
   el.classList.toggle('noanim', !!opt.noanim);
   el.classList.add('on');
@@ -246,7 +253,7 @@ function show(v, p, opt = {}) {
 function back() {
   if (sheetOpen) { closeSheet(); return true; }
   if (!current) return false;
-  if (current.v === 'recording' || current.v === 'alarm') { toast('Mantén presionado el botón para terminar'); return true; }
+  if (['recording', 'alarm', 'mission', 'sunrise'].includes(current.v)) { toast('Mantén presionado el botón para terminar'); return true; }
   if (current.v === 'onboard') return false;
   if (stack.length) {
     cleanups.forEach(f => { try { f(); } catch (e) {} }); cleanups = [];
@@ -265,7 +272,7 @@ V.home = el => {
   const list = nights(), last = list[0];
   const now = new Date(), hr = now.getHours();
   const greet = hr < 5 ? 'Buenas noches' : hr < 12 ? 'Buenos días' : hr < 19 ? 'Buenas tardes' : 'Buenas noches';
-  const st = streak(list), db = debt(list, S.goal);
+  const st = streak(list), db = debt(list, S.goal), cafNow = caffeineAt(S.caffeineLog, Date.now());
   let card;
   if (last) {
     const s = last.summary;
@@ -286,16 +293,16 @@ V.home = el => {
     <p class="mute sm" style="margin-top:12px">${cap(DIAS[now.getDay()])} ${now.getDate()} de ${MESES[now.getMonth()]}</p>
     <h1 style="margin-top:4px">${greet.replace(' ', '<br>')}</h1>
     ${card}
-    ${list.length ? `<div class="row" style="gap:8px;margin-top:14px;flex-wrap:wrap">
-      <span class="chip plain">${ic('flame', 15, 'style="color:#E6A85C"')}${st} ${st === 1 ? 'noche seguida' : 'noches seguidas'}</span>
-      <span class="chip plain">${ic('target', 15, 'style="color:#78B3A6"')}Deuda ${fmtDurShort(db)}</span></div>` : ''}
+    <div class="row" style="gap:8px;margin-top:14px;flex-wrap:wrap">
+      ${list.length ? `<span class="chip plain">${ic('flame', 15, 'style="color:#E6A85C"')}${st} ${st === 1 ? 'noche seguida' : 'noches seguidas'}</span>
+      <span class="chip plain">${ic('target', 15, 'style="color:#78B3A6"')}Deuda ${fmtDurShort(db)}</span>` : ''}
+      ${cafNow >= 5 ? `<button class="chip plain" id="h-caf">${ic('coffee', 15, 'style="color:#E6A85C"')}${Math.round(cafNow)} mg de cafeína</button>` : ''}
+      ${S.plan ? `<button class="chip plain" id="h-plan">${ic('flag', 15, 'style="color:#A89BE0"')}Plan: hoy a las ${planTonight() || '—'}</button>` : ''}</div>
     <button class="btn main" id="h-go" style="margin-top:20px">${ic('moon', 22)}Ir a dormir</button>
     <button class="row" id="h-alarm" style="justify-content:center;margin:10px auto 0;gap:6px;color:var(--mute);font-size:13px;padding:6px">${ic('alarm', 15)}${S.alarmOn ? `Alarma ${S.win ? 'inteligente ' + fmtClockMin(toMin(S.wake) - S.win) + ' a ' + S.wake : 'a las ' + S.wake}` : 'Sin alarma'}</button>
-    <div class="row" style="gap:10px;margin-top:18px">
-      <button class="tile" id="h-breathe"><span class="ibox" style="background:rgba(120,179,166,.18);color:#78B3A6">${ic('lungs', 20)}</span><b class="sm">Respirar</b></button>
-      <button class="tile" id="h-sounds"><span class="ibox" style="background:rgba(168,155,224,.18);color:#A89BE0">${ic('rain', 20)}</span><b class="sm">Sonidos</b></button>
-      <button class="tile" id="h-report"><span class="ibox" style="background:rgba(230,168,92,.18);color:#E6A85C">${ic('report', 20)}</span><b class="sm">Reporte</b></button>
-    </div>
+    <div class="tools">${[['breathe', 'lungs', 'Respirar', '#78B3A6'], ['relax', 'rain', 'Sonidos', '#A89BE0'], ['nap', 'bed', 'Siesta', '#E6A85C'], ['caffeine', 'coffee', 'Cafeína', '#E6A85C'],
+      ['plan', 'flag', 'Plan', '#A89BE0'], ['badges', 'trophy', 'Logros', '#E6A85C'], ['report', 'report', 'Reporte', '#78B3A6'], ['chrono', 'sunrise', 'Cronotipo', '#A89BE0']]
+      .map(([v, i, l, c]) => `<button class="tool" data-go="${v}"><span class="ibox" style="background:${c}22;color:${c}">${ic(i, 20)}</span><span>${l}</span></button>`).join('')}</div>
   </div>`;
   if (last) {
     $('#h-mini').innerHTML = hypSvg(last, innerWidth - 40 - 38, 58, true);
@@ -303,9 +310,9 @@ V.home = el => {
   }
   $('#h-go').onclick = () => go('prepare');
   $('#h-alarm').onclick = () => go('prepare');
-  $('#h-breathe').onclick = () => go('breathe', {});
-  $('#h-sounds').onclick = () => go('relax', {}, { reset: true });
-  $('#h-report').onclick = () => go('report');
+  $$('[data-go]', el).forEach(b => b.onclick = () => b.dataset.go === 'relax' ? go('relax', {}, { reset: true }) : go(b.dataset.go, {}));
+  if ($('#h-caf')) $('#h-caf').onclick = () => go('caffeine');
+  if ($('#h-plan')) $('#h-plan').onclick = () => go('plan');
   animateIn(el);
 };
 const toMin = hhmm => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
@@ -334,6 +341,13 @@ V.prepare = el => {
     <button class="it" id="p-aid">${ic('rain', 20, 'style="color:#A89BE0"')}<div style="flex:1"><b class="sm">Sonido para dormir</b><p class="mute xs">${aidTxt}</p></div>${ic('chevR', 18)}</button>
     <button class="it" id="p-br">${ic('lungs', 20, 'style="color:#78B3A6"')}<div style="flex:1"><b class="sm">Respirar antes de dormir</b><p class="mute xs">${techName(S.breathTech)}, unos 3 minutos</p></div><span class="sw ${S.breatheBefore ? 'on' : ''}"></span></button>
   </div>
+  <h3 style="margin:20px 0 10px">Opciones de la noche</h3>
+  <div class="lst card" style="padding:4px 16px">
+    <button class="it" id="p-mat">${ic('bed', 20, 'style="color:#78B3A6"')}<div style="flex:1"><b class="sm">Modo colchón</b><p class="mute xs">Pon el cel sobre el colchón, junto a tu almohada, para medir también tus movimientos.</p></div><span class="sw ${S.mattress ? 'on' : ''}"></span></button>
+    <button class="it" id="p-sun" ${S.alarmOn ? '' : 'style="opacity:.4"'}>${ic('sunrise', 20, 'style="color:#E6A85C"')}<div style="flex:1"><b class="sm">Amanecer en pantalla</b><p class="mute xs">La pantalla se ilumina poco a poco 15 min antes de la alarma.</p></div><span class="sw ${S.sunrise ? 'on' : ''}"></span></button>
+    <button class="it" id="p-mis">${ic('hash', 20, 'style="color:#E6A85C"')}<div style="flex:1"><b class="sm">Misión para apagar la alarma</b><p class="mute xs">${MISSIONS[S.mission] || 'Ninguna'}</p></div>${ic('chevR', 18)}</button>
+    <button class="it" id="p-anti">${ic('snore', 20, 'style="color:#E6A85C"')}<div style="flex:1"><b class="sm">Anti-ronquido</b><p class="mute xs">${ANTI[S.antiSnore] || 'Apagado'}</p></div>${ic('chevR', 18)}</button>
+  </div>
   <h3 style="margin:20px 0 10px">Notas de hoy</h3>
   <div class="chips" id="p-tags">${allTags.map(t => `<button class="chip ${prepTags.has(t) ? 'on' : ''}" data-tag="${esc(t)}">${ic(tagIcon(t), 14)}${esc(t)}</button>`).join('')}<button class="chip" id="p-new">${ic('plus', 14)}Nueva</button></div>
   <div class="hint" style="margin-top:16px">${ic('bulb', 20, 'style="color:#78B3A6"')}<span id="p-bed"></span></div>
@@ -350,6 +364,10 @@ V.prepare = el => {
   $('#p-asound').onclick = () => alarmSoundSheet(() => refresh());
   $('#p-aid').onclick = () => soundPickSheet('aid', () => refresh());
   $('#p-br').onclick = () => { S.breatheBefore = !S.breatheBefore; saveS(); $('.sw', $('#p-br')).classList.toggle('on', S.breatheBefore); };
+  $('#p-mat').onclick = () => { S.mattress = !S.mattress; saveS(); $('.sw', $('#p-mat')).classList.toggle('on', S.mattress); if (S.mattress) toast('Pon el cel boca abajo sobre el colchón, junto a la almohada'); };
+  $('#p-sun').onclick = () => { if (!S.alarmOn) { toast('Primero activa la alarma'); return; } S.sunrise = !S.sunrise; saveS(); $('.sw', $('#p-sun')).classList.toggle('on', S.sunrise); };
+  $('#p-mis').onclick = () => missionSheet(refresh);
+  $('#p-anti').onclick = () => antiSnoreSheet(refresh);
   $('#p-tags').addEventListener('click', e => {
     const c = e.target.closest('[data-tag]'); if (!c) return;
     const t = c.dataset.tag; if (prepTags.has(t)) prepTags.delete(t); else prepTags.add(t);
@@ -387,6 +405,8 @@ function doStart() {
     aid: S.aidTypes.length ? { types: S.aidTypes.map(t => ({ type: t, vol: S.aidVols[t] ?? .5 })), min: S.aidMin } : null,
     tags: S.lastTags, sens: S.sens, goal: S.goal,
     alarmSound: S.alarmSound, vibrate: S.vibrate, ramp: S.ramp, snooze: S.snooze, saveClips: S.saveClips,
+    mattress: S.mattress, antiSnore: S.antiSnore, sunrise: S.alarmOn && S.sunrise, mission: S.mission,
+    caffeine: Math.round(caffeineAt(S.caffeineLog, Date.now())),
   };
   const r = N.startNight(JSON.stringify(cfg));
   if (r === 'ok') { prepTags = null; go('recording', { fresh: Date.now() }, { reset: true }); }
@@ -397,6 +417,7 @@ function doStart() {
 /* =========================================================
    GRABANDO
    ========================================================= */
+let sunriseSeen = false;
 V.recording = (el, p) => {
   el.innerHTML = `
   <div class="rec-top"><span class="recdot"></span><span id="r-status">Grabando tu sueño</span></div>
@@ -404,6 +425,7 @@ V.recording = (el, p) => {
     <button class="row" id="r-alarm" style="justify-content:center;gap:6px;color:#3E3A60;font-size:14px;margin:12px auto 0;padding:6px 10px">${ic('alarm', 15)}<span></span></button>
     <canvas id="rec-wave" width="480" height="80"></canvas>
     <div class="rec-meta"><span id="r-aid"></span><span>${ic('snore', 15)}<b id="r-snore" class="count">0</b>&nbsp;ronquidos</span></div>
+    <div class="rec-meta" id="r-extra"></div>
   </div>
   <p class="rec-note" id="r-note">Puedes bloquear el cel y apagar la pantalla. Sigo grabando.</p>
   <button id="hold" aria-label="Mantén presionado para terminar la noche">
@@ -425,6 +447,7 @@ V.recording = (el, p) => {
     $('#r-clock').textContent = fmtTime(now);
     lv = J(N.live(), {});
     if (lv.ringing) { go('alarm', {}, { replace: true }); return; }
+    if (lv.sunrise && !sunriseSeen) { sunriseSeen = true; go('sunrise', {}, { replace: true }); return; }
     if (!lv.recording) {
       missing++;
       if (missing > 3) { $('#r-status').textContent = 'La grabación se detuvo'; $('#r-note').textContent = 'Mantén presionado el botón para ver lo que se grabó.'; }
@@ -438,6 +461,11 @@ V.recording = (el, p) => {
     const so = lv.sounds || {};
     $('#r-aid').innerHTML = so.playing && so.layers && so.layers.length ? `${ic('rain', 15)}${SOUND_NAME[so.layers[0].type] || 'Sonido'} ${Math.ceil((so.left || 0) / 60000)} min` : '';
     draw(lv.wave || []);
+    const ex = [];
+    if (lv.nap) ex.push(`${ic('bed', 15)}Siesta`);
+    if (lv.mattress) ex.push(`<i class="recdot" style="background:${lv.moving ? '#6E6A9E' : '#2E2B4A'};animation:none"></i>Modo colchón`);
+    if (lv.nudges) ex.push(`${ic('snore', 15)}${lv.nudges} ${lv.nudges === 1 ? 'aviso' : 'avisos'}`);
+    $('#r-extra').innerHTML = ex.map(x => `<span>${x}</span>`).join('');
   };
   tick();
   const iv = setInterval(tick, 1000);
@@ -472,10 +500,13 @@ function editAlarmSheet() {
 }
 function stopFlow() {
   const id = N.stopNight();
+  N.setBrightness(-1); sunriseSeen = false;
   if (id) {
     const n = finalize(id);
     if (n && (n.minutes || []).length < 3) toast('Fue una grabación muy corta');
-    go('mood', { id }, { reset: true });
+    afterNight(n);
+    if (n && n.nap) go('detail', { id }, { reset: true });
+    else go('mood', { id }, { reset: true });
   } else go('home', {}, { reset: true });
 }
 
@@ -484,6 +515,7 @@ function stopFlow() {
    ========================================================= */
 V.alarm = el => {
   const lv0 = J(N.live(), {});
+  N.setBrightness(1);
   el.innerHTML = `<div class="sun"></div>
   <div style="position:relative;z-index:2;text-align:center;margin-top:calc(110px + var(--st))">
     <p style="font-size:16px">Buenos días</p>
@@ -505,7 +537,7 @@ V.alarm = el => {
   const end = e => {
     if (sx === null) return;
     const dx = clamp(e.clientX - sx, 0, max); sx = null; knob.style.transition = '';
-    if (dx > max * .8) { knob.style.transform = `translateX(${max}px)`; N.vibrate(40); wakeUp(); }
+    if (dx > max * .8) { knob.style.transform = `translateX(${max}px)`; N.vibrate(40); if (S.mission && S.mission !== 'ninguna') go('mission', {}, { replace: true }); else wakeUp(); }
     else knob.style.transform = '';
   };
   slide.addEventListener('pointerup', end); slide.addEventListener('pointercancel', end);
@@ -513,7 +545,8 @@ V.alarm = el => {
 };
 function wakeUp() {
   const id = N.stopNight();
-  if (id) { finalize(id); go('mood', { id }, { reset: true }); }
+  N.setBrightness(-1); N.shakeStop(); sunriseSeen = false;
+  if (id) { const n = finalize(id); afterNight(n); go(n && n.nap ? 'detail' : 'mood', { id }, { reset: true }); }
   else go('home', {}, { reset: true });
 }
 
@@ -531,7 +564,9 @@ V.mood = (el, p) => {
   </div>
   <h3 style="margin:26px 0 10px">¿Algo más de anoche?</h3>
   <div class="chips" id="m-chips">${MORNING.map(([t, i]) => `<button class="chip" data-t="${t}">${ic(i, 14)}${t}</button>`).join('')}</div>
-  <button class="btn main" id="m-go" style="margin-top:34px">Ver mi noche ${ic('chevR', 20)}</button>
+  <h3 style="margin:26px 0 10px">¿Qué soñaste?</h3>
+  <textarea id="m-dream" rows="3" placeholder="Escríbelo antes de que se te olvide (opcional)" style="width:100%;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px;color:var(--paper);font:inherit;resize:none;outline:none;-webkit-user-select:text;user-select:text"></textarea>
+  <button class="btn main" id="m-go" style="margin-top:24px">Ver mi noche ${ic('chevR', 20)}</button>
   <button class="btn" id="m-skip" style="width:100%;color:var(--mute);margin-top:4px">Saltar</button>`;
   $$('#m-faces button').forEach(b => b.onclick = () => {
     mood = +b.dataset.m; N.vibrate(15);
@@ -539,7 +574,7 @@ V.mood = (el, p) => {
   });
   $('#m-chips').addEventListener('click', e => { const c = e.target.closest('[data-t]'); if (!c) return; const t = c.dataset.t; morning.has(t) ? morning.delete(t) : morning.add(t); c.classList.toggle('on', morning.has(t)); });
   const done = save => {
-    if (save) { const n = getNight(p.id); if (n) { n.mood = mood || null; n.morning = [...morning]; n.summary = n.summary || analyze(n, S.goal); saveNight(n); } }
+    if (save) { const n = getNight(p.id); if (n) { n.mood = mood || null; n.morning = [...morning]; n.dream = $('#m-dream').value.trim(); n.summary = n.summary || analyze(n, S.goal); saveNight(n); checkBadges(); } }
     go('detail', { id: p.id, fresh: true }, { replace: true });
   };
   $('#m-go').onclick = () => done(true);

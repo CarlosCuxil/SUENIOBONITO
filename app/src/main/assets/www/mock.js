@@ -17,10 +17,14 @@
     for (let m = lat; m < len - 8; m++) { if (r() < 0.035) ev(m, 'movimiento'); if (r() < 0.012) { ev(m, 'movimiento'); ev(m, 'ruido', 4); } }
     const sn = opts.snore || 0.1;
     let m0 = lat + 70;
-    while (m0 < len - 20) { if (r() < sn * 3) { const l = 10 + Math.floor(r() * 25); for (let m = m0; m < Math.min(m0 + l, len - 10); m++) for (let k = 0; k < 4; k++) n.events.push({ t: start + m * 60000 + k * 12000, d: 1.2, p: 15, type: 'ronquido' }); m0 += l; } m0 += 40; }
+    while (m0 < len - 20) { if (r() < sn * 3) { const l = 10 + Math.floor(r() * 25); for (let m = m0; m < Math.min(m0 + l, len - 10); m++) { const pz = r() < .15; for (let k = 0; k < 12; k++) { if (pz && k >= 5 && k <= 8) continue; n.events.push({ t: start + m * 60000 + k * 5000, d: 1.2, p: 15, type: 'ronquido' }); } } m0 += l; } m0 += 40; }
     if (opts.talk) ev(lat + 30, 'habla', 2.4);
     if (opts.cough) { ev(lat + 180, 'tos', .4); ev(lat + 181, 'tos', .4); }
     for (let m = len - 6; m < len; m++) { ev(m, 'movimiento'); ev(m, 'movimiento'); }
+    if (opts.mattress) n.minutes.forEach((m, i) => { m.push(i < lat || i > len - 6 ? 10 : r() < .06 ? 6 : 0); });
+    n.mattress = !!opts.mattress;
+    n.caffeine = opts.caf != null ? opts.caf : null;
+    n.nudges = opts.nudge ? [start + 200 * 60000, start + 260 * 60000] : [];
     n.events.sort((a, b) => a.t - b.t);
     if (opts.awake) for (let m = opts.awake; m < opts.awake + 5; m++) { ev(m, 'movimiento'); ev(m, 'movimiento'); ev(m, 'ruido', 3); }
     return n;
@@ -36,7 +40,9 @@
       const tags = tagsets[k] || [];
       const alc = tags.includes('Alcohol'), caf = tags.includes('Café');
       const len = 380 + Math.floor(r() * 110) - (alc ? 30 : 0);
-      const n = fakeNight(d.getTime(), len, { tags, lat: caf ? 30 + Math.floor(r() * 15) : 10 + Math.floor(r() * 10), snore: alc ? .5 : .12, talk: r() < .3, cough: r() < .2, mood: 1 + Math.floor(r() * 3), awake: alc ? 220 : (r() < .3 ? 160 : 0) });
+      const n = fakeNight(d.getTime(), len, { tags, lat: caf ? 30 + Math.floor(r() * 15) : 10 + Math.floor(r() * 10), snore: alc ? .5 : .12, talk: r() < .3, cough: r() < .2, mood: 1 + Math.floor(r() * 3), awake: alc ? 220 : (r() < .3 ? 160 : 0), mattress: k % 2 === 0, caf: caf ? 60 + Math.floor(r() * 40) : 10 + Math.floor(r() * 30), nudge: alc });
+      n.weather = { t: 14 + Math.round(r() * 90) / 10, h: 60 + Math.floor(r() * 30), p: 850, rain: r() < .4 ? Math.round(r() * 80) / 10 : 0, city: 'Ciudad de Guatemala' };
+      if (k % 4 === 0) n.dream = 'Estaba en un mercado de Antigua y todo era de colores, alguien me regalaba un barrilete gigante.';
       n.summary = analyze(n);
       o[n.id] = n;
     }
@@ -51,7 +57,7 @@
     const lvl = Math.max(0, Math.sin(now / 700) * .4 + r() * .2);
     rec.wave.push(lvl); if (rec.wave.length > 60) rec.wave.shift();
     if (rec.alarm.on && !rec.ringing && now >= rec.alarm.wakeTs) { rec.ringing = true; rec.ringWhy = 'Es tu hora'; }
-    return JSON.stringify({ recording: true, ringing: rec.ringing, ringWhy: rec.ringWhy || '', id: rec.id, start: rec.start, now, level: lvl, counts: rec.counts, wave: rec.wave, alarm: rec.alarm, minutes: Math.floor((now - rec.start) / 60000), sounds: soundsState() });
+    return JSON.stringify({ recording: true, ringing: rec.ringing, ringWhy: rec.ringWhy || '', id: rec.id, start: rec.start, now, level: lvl, counts: rec.counts, wave: rec.wave, alarm: rec.alarm, minutes: Math.floor((now - rec.start) / 60000), sounds: soundsState(), mattress: rec.mattress, moving: r() < .3, nudges: rec.cfg.antiSnore !== 'off' ? 1 : 0, nap: rec.nap, sunrise: !!window.__sunrise });
   };
   function soundsState() { return { playing: sounds.playing, layers: sounds.layers, left: sounds.end ? Math.max(0, sounds.end - Date.now()) : 0 }; }
 
@@ -70,14 +76,15 @@
     deleteClip: () => {},
     startNight: cfg => {
       const c = JSON.parse(cfg); const start = Date.now();
-      rec = { id: 'n' + start, start, alarm: c.alarm || { on: false }, counts: { ronquido: 0 }, wave: [], ringing: false, cfg: c };
+      rec = { id: 'n' + start, start, alarm: c.alarm || { on: false }, counts: { ronquido: 0 }, wave: [], ringing: false, cfg: c, mattress: c.mattress, nap: c.nap };
       if (c.aid && c.aid.types && c.aid.types.length) { sounds = { playing: true, layers: c.aid.types, end: Date.now() + c.aid.min * 60000 }; }
       return 'ok';
     },
     stopNight: () => {
       if (!rec) return '';
       const len = Math.max(420, Math.floor((Date.now() - rec.start) / 60000));
-      const n = fakeNight(rec.start - (len - Math.floor((Date.now() - rec.start) / 60000)) * 60000, len, { tags: rec.cfg.tags, talk: true, cough: true, snore: .2 });
+      const n = fakeNight(rec.start - (len - Math.floor((Date.now() - rec.start) / 60000)) * 60000, rec.nap ? 30 : len, { tags: rec.cfg.tags, talk: true, cough: true, snore: .2, mattress: rec.mattress, caf: rec.cfg.caffeine, nudge: true, lat: rec.nap ? 5 : 15 });
+      n.nap = !!rec.nap;
       n.id = rec.id; n.alarm = { ...rec.alarm, rangAt: Date.now() };
       const o = nights(); o[n.id] = n; saveAll(o); rec = null; sounds.playing = false; return n.id;
     },
@@ -100,6 +107,9 @@
     importBackup: () => {},
     shareImage: () => {},
     refreshWidget: () => {},
+    setBrightness: v => { document.body.style.filter = v < 0 ? '' : `brightness(${0.4 + v * 0.6})`; },
+    shakeStart: () => { window.__sh = Date.now(); }, shakeStop: () => {}, shakeCount: () => Math.floor((Date.now() - (window.__sh || Date.now())) / 150),
+    printReport: () => {}, rescheduleReminder: () => {}, setChrome: () => {}, appVersion: () => '1.1 (web)',
     alarmSounds: () => JSON.stringify(['amanecer', 'campanas', 'pajaros', 'clasica']),
   };
 })();

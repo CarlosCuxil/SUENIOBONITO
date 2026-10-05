@@ -22,13 +22,13 @@ V.detail = (el, p) => {
   el.innerHTML = `
   <div class="top"><button class="iconbtn" data-back>${ic('chevL', 24)}</button><span class="mute sm">${esc(nightLabel(n.start))}</span><button class="iconbtn" id="d-share">${ic('share', 20)}</button></div>
   <div style="text-align:center;margin-top:4px">${ring(170, s.score, 12, 'calidad')}
-    <h2 style="margin-top:6px">${verdict(s)}</h2>
+    <h2 style="margin-top:6px">${verdict(s, n.nap)}</h2>${n.nap ? `<p class="mute sm">${ic('bed', 14, 'style="display:inline;vertical-align:-2px"')} Siesta de ${fmtDurShort(s.inBed)}</p>` : ''}
     ${moodTxt ? `<p class="mute sm row" style="justify-content:center;gap:6px;margin-top:4px">${ic(moodTxt[0], 15, `style="color:${moodTxt[2]}"`)}${moodTxt[1]}</p>` : ''}${al}
     ${n.recovered ? '<p class="mute xs" style="margin-top:4px">La grabación se interrumpió; esta noche se guardó con lo que alcanzó a grabar.</p>' : ''}
   </div>
   <div class="card" style="margin-top:18px;padding:14px 10px 10px">
     <div class="graphwrap" id="d-graph">${hypSvg(n, W, 200, false)}<div class="cursor" style="height:150px"></div><div class="tip"></div></div>
-    <div class="row xs mute" style="gap:14px;margin:8px 4px 0;flex-wrap:wrap"><span class="row" style="gap:5px"><i style="width:10px;height:10px;border-radius:3px;background:#78B3A6"></i>Profundidad</span><span class="row" style="gap:5px"><i style="width:10px;height:10px;border-radius:3px;background:#E6A85C"></i>Ronquidos</span><span class="row" style="gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#A89BE0"></i>Habla / tos</span></div>
+    <div class="row xs mute" style="gap:14px;margin:8px 4px 0;flex-wrap:wrap"><span class="row" style="gap:5px"><i style="width:10px;height:10px;border-radius:3px;background:#78B3A6"></i>Profundidad</span><span class="row" style="gap:5px"><i style="width:10px;height:10px;border-radius:3px;background:#E6A85C"></i>Ronquidos</span><span class="row" style="gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#A89BE0"></i>Habla / tos</span>${s.pauses ? '<span class="row" style="gap:5px"><i style="width:10px;height:10px;border-radius:50%;background:#ECE6D6"></i>Pausas</span>' : ''}</div>
     <p class="mute xs" style="margin:6px 4px 0">Toca la gráfica para ver qué pasaba a cada hora.</p>
   </div>
   ${s.noSleep ? '' : `<div class="sec"><h3>Tus fases</h3>
@@ -47,11 +47,14 @@ V.detail = (el, p) => {
       <div style="flex:1;min-width:0"><div class="between"><b class="sm row" style="gap:6px">${ic(TYPE_ICON[c.kind] || 'volume', 15, `style="color:${TYPE_COLOR[c.kind] || '#9A97B8'}"`)}${TYPE_LABEL[c.kind] || 'Sonido'}</b><span class="mute xs">${fmtTime(c.t)}</span></div>
       <div class="wf">${waveBars(55, 22, k * 7 + 3)}<div class="fill">${waveBars(55, 22, k * 7 + 3, TYPE_COLOR[c.kind] || '#ECE6D6')}</div></div></div></div>`).join('')}</div>`
     : `<p class="empty sm" style="margin-top:10px">${S.saveClips ? 'No hubo ronquidos, habla ni tos que guardar esta noche.' : 'Tienes apagado "Guardar audios" en Ajustes.'}</p>`}</div>
+  <div id="d-extra"></div>
   <div class="sec"><div class="between"><h3>Notas</h3><button class="chip" id="d-edit">${ic('sliders', 14)}Editar</button></div>
     ${tags.length ? `<div class="chips">${tags.map(t => `<span class="chip on">${ic(tagIcon(t), 14)}${esc(t)}</span>`).join('')}</div>` : '<p class="mute sm">Sin notas para esta noche.</p>'}</div>
   <div class="sec"><h3>Consejos para esta noche</h3>
     ${tipsFor(n, all.filter(x => x.id !== n.id).concat([n]).sort((a, b) => b.start - a.start)).map(t => `<div class="tipcard"><span class="ibox" style="background:rgba(255,255,255,.05);color:${t.c}">${ic(t.i, 20)}</span><div><b class="sm">${t.h}</b><p class="sm mute" style="margin-top:2px">${t.b}</p></div></div>`).join('')}</div>
   <div class="row" style="gap:10px;margin-top:10px"><button class="btn ghost" id="d-share2" style="flex:1;font-size:14px">${ic('share', 18)}Compartir</button><button class="btn danger" id="d-del" style="flex:1;font-size:14px">${ic('trash', 18)}Borrar</button></div>`;
+  $('#d-extra').innerHTML = detailExtras(n);
+  bindDetailExtras(el, n);
   animateIn(el);
   attachGraphTip($('#d-graph'), n, W);
   $$('.clip', el).forEach(row => {
@@ -149,8 +152,11 @@ V.stats = el => {
         <div class="track"><i data-w="${Math.min(50, Math.abs(i.d) * 2.2)}%" style="${i.d >= 0 ? 'left:50%' : 'right:50%'};background:${i.d >= 0 ? '#78B3A6' : '#D98C8C'}"></i><b></b></div></div>`).join('')
       : '<p class="empty sm">Marca notas antes de dormir (café, ejercicio, estrés…). Con 2 noches por nota verás cuánto te afectan.</p>'}</div>
     ${moods.length ? `<div class="sec"><h3>Cómo te sentiste al despertar</h3>${moods.map(m => `<div class="impact between sm"><span class="row" style="gap:8px">${ic(['', 'frown', 'meh', 'smile'][m.m], 18, `style="color:${['', '#D98C8C', '#A89BE0', '#78B3A6'][m.m]}"`)}${['', 'Cansado', 'Normal', 'Descansado'][m.m]} <span class="mute xs">(${m.c})</span></span><span>${Math.round(m.q)}% y ${m.h.toFixed(1)} h en promedio</span></div>`).join('')}</div>` : ''}
+    <div id="s-extra"></div>
     <button class="card sec row" id="s-rep" style="gap:14px;width:100%;text-align:left;background:linear-gradient(135deg,#2A2F5C,#3A2F55)"><span class="ibox" style="background:rgba(230,168,92,.2);color:#E6A85C">${ic('report', 22)}</span><span style="flex:1"><b>Reporte semanal</b><p class="mute sm">Tu semana en un vistazo, con recomendaciones.</p></span>${ic('chevR', 20)}</button>`;
     $('#s-rep').onclick = () => go('report');
+    $('#s-extra').innerHTML = statsExtras(all, cur);
+    bindStatsExtras(el);
   }
   $$('[data-r]', el).forEach(b => b.onclick = () => { statRange = b.dataset.r; refresh(); });
   $('#s-exp').onclick = exportBackup;
@@ -240,11 +246,11 @@ V.report = el => {
    ========================================================= */
 let diaryMonth = null, diarySel = null;
 V.diary = el => {
-  const all = nights();
+  const all = allNights();
   if (!diaryMonth) { const d = nightDate(Date.now()); diaryMonth = [d.getFullYear(), d.getMonth()]; }
   const [y, m] = diaryMonth;
   const byKey = {};
-  all.forEach(n => { const k = nightKey(n.start); if (!byKey[k] || byKey[k].summary.score < n.summary.score) byKey[k] = n; });
+  all.filter(n => !n.nap).forEach(n => { const k = nightKey(n.start); if (!byKey[k] || byKey[k].summary.score < n.summary.score) byKey[k] = n; });
   const monthNights = all.filter(n => { const d = nightDate(n.start); return d.getFullYear() === y && d.getMonth() === m; });
   if (!diarySel || !monthNights.find(n => n.id === diarySel)) diarySel = monthNights[0] ? monthNights[0].id : null;
   const first = new Date(y, m, 1), offset = (first.getDay() + 6) % 7, daysIn = new Date(y, m + 1, 0).getDate();
@@ -266,7 +272,7 @@ V.diary = el => {
     <div style="margin-top:10px">${hypSvg(sel, innerWidth - 40 - 38, 52, true)}</div>
     ${(sel.tags || []).length || sel.mood ? `<div class="chips" style="margin-top:10px">${(sel.tags || []).map(t => `<span class="chip">${ic(tagIcon(t), 13)}${esc(t)}</span>`).join('')}${sel.mood ? `<span class="chip">${ic(['', 'frown', 'meh', 'smile'][sel.mood], 13)}${['', 'Cansado', 'Normal', 'Descansado'][sel.mood]}</span>` : ''}</div>` : ''}
   </button>` : `<p class="empty" style="margin-top:14px">No hay noches grabadas en ${MESES[m]}.</p>`}
-  ${monthNights.length > 1 ? `<div class="sec"><h3>Noches del mes</h3><div class="lst">${monthNights.map(n => `<button class="it" data-open="${n.id}"><span style="width:10px;height:10px;border-radius:50%;background:${scoreColor(n.summary.score)}"></span><span style="flex:1"><b class="sm">${esc(nightLabel(n.start))}</b><br><span class="mute xs">${fmtTime(n.start)} a ${fmtTime(n.end)}${n.summary.noSleep ? '' : ', ' + fmtDurShort(n.summary.sleepMin)}</span></span><span style="font-family:var(--serif);font-size:20px">${n.summary.score}%</span></button>`).join('')}</div></div>` : ''}`;
+  ${monthNights.length > 1 ? `<div class="sec"><h3>Noches del mes</h3><div class="lst">${monthNights.map(n => `<button class="it" data-open="${n.id}"><span style="width:10px;height:10px;border-radius:50%;background:${scoreColor(n.summary.score)}"></span><span style="flex:1"><b class="sm">${n.nap ? 'Siesta, ' : ''}${esc(nightLabel(n.start))}</b><br><span class="mute xs">${fmtTime(n.start)} a ${fmtTime(n.end)}${n.summary.noSleep ? '' : ', ' + fmtDurShort(n.summary.sleepMin)}</span></span><span style="font-family:var(--serif);font-size:20px">${n.summary.score}%</span></button>`).join('')}</div></div>` : ''}`;
   $$('[data-n]', el).forEach(b => b.onclick = () => { diarySel = b.dataset.n; N.vibrate(10); refresh(); });
   $$('[data-open]', el).forEach(b => b.onclick = () => go('detail', { id: b.dataset.open }));
   if (sel) $('#dy-card').onclick = () => go('detail', { id: sel.id });
@@ -402,6 +408,7 @@ V.breathe = (el, p) => {
   };
   const finish = () => {
     running = false;
+    S.breathCount = (S.breathCount || 0) + 1; saveS(); checkBadges();
     $('#b-cyc').textContent = 'Listo'; $('#b-w').textContent = ''; $('#b-n').textContent = '✓';
     $('#b-tip').textContent = 'Bien hecho'; $('#b-sub').textContent = 'Tu cuerpo está más tranquilo';
     if (S.breathVoice) N.speak('Bien hecho');
@@ -457,11 +464,18 @@ V.settings = el => {
     ${perm('fullscreen', 'Alarma en pantalla completa', 'Para verla con el cel bloqueado')}
     ${perm('battery', 'Sin límite de batería', 'Recomendado para que Android no corte la grabación')}
   </div>
+  ${settingsExtras()}
   <p class="grouplabel">Tus datos</p>
   <div class="card lst" style="padding:2px 16px">
+    ${set('st-pdf', 'report', 'Reporte para el médico', 'PDF con tus últimos 30 días', chev)}
     ${set('st-exp', 'download', 'Exportar respaldo', 'Noches y notas en un archivo en Descargas', chev)}
     ${set('st-imp', 'upload', 'Importar respaldo', '', chev)}
     ${set('st-del', 'trash', 'Borrar todo', '', chev, '#D98C8C')}
+  </div>
+  <p class="grouplabel">Acerca de</p>
+  <div class="card lst" style="padding:2px 16px">
+    <a class="it" href="https://carloscuxil.github.io/SUENIOBONITO/privacidad.html" style="color:inherit;text-decoration:none">${ic('shield', 20, 'style="color:#78B3A6"')}<div style="flex:1"><b class="sm">Política de privacidad</b><p class="mute xs">Qué datos usa la app y dónde se guardan</p></div>${chev}</a>
+    <div class="it">${ic('moon', 20, 'style="color:#A89BE0"')}<div style="flex:1"><b class="sm">Sueño</b><p class="mute xs">Versión ${esc((N.appVersion && N.appVersion()) || 'web')}</p></div></div>
   </div>
   <p class="mute xs" style="text-align:center;margin-top:22px;line-height:1.6">Todo se guarda solo en este celular.<br>Las fases se estiman por sonido; no es un estudio médico.</p>`;
   const tog = (id, key, after) => $('#' + id).onclick = () => { S[key] = !S[key]; saveS(); N.vibrate(10); after ? after() : $('.sw', $('#' + id)).classList.toggle('on', S[key]); };
@@ -507,8 +521,10 @@ V.settings = el => {
   $('#st-sens').onclick = () => pick('Sensibilidad', 'Qué tan fuerte debe ser un sonido para contarlo.', [['baja', 'Baja', 'Para cuartos con ventilador o ruido de calle'], ['media', 'Media', 'Funciona bien en la mayoría de cuartos'], ['alta', 'Alta', 'Para cuartos muy silenciosos']], S.sens, v => S.sens = v);
   $('#st-clean').onclick = () => pick('Borrar audios viejos', 'Los audios ocupan espacio; las noches se quedan.', [[7, 'Después de 7 días'], [30, 'Después de 30 días'], [90, 'Después de 90 días'], [0, 'Nunca']], S.cleanDays, v => S.cleanDays = +v);
   $('#st-test').onclick = micTestSheet;
-  $$('[data-perm]', el).forEach(b => b.onclick = () => { if (!pm[b.dataset.perm]) N.requestPerm(b.dataset.perm); });
+  $$('[data-perm]', el).forEach(b => b.onclick = () => { if (pm[b.dataset.perm]) return; if (b.dataset.perm === 'battery') toast('Busca "Sueño" en la lista y elige "Sin restricciones"'); N.requestPerm(b.dataset.perm); });
   $('#st-exp').onclick = exportBackup;
+  $('#st-pdf').onclick = doctorPdf;
+  bindSettingsExtras(el);
   $('#st-imp').onclick = () => N.importBackup();
   $('#st-del').onclick = () => confirmSheet('¿Borrar todo?', 'Se borran todas tus noches y audios de este celular. No se puede deshacer.', 'Borrar todo', true, () => { N.deleteAll(); invalidate(); toast('Datos borrados'); refresh(); });
 };
@@ -572,7 +588,7 @@ V.onboard = el => {
       <div style="margin-top:16px">${prow('mic', 'mic', 'Micrófono', 'Para escuchar ronquidos y movimientos', true)}${prow('notif', 'bell', 'Notificaciones', 'Para la alarma y el recordatorio', true)}${prow('battery', 'battery', 'Sin límite de batería', 'Para que Android no corte la grabación', false)}</div>
       ${dots}<button class="btn main" id="ob-n" style="margin-top:16px" ${pm.mic ? '' : 'disabled'}>Empezar</button>
       ${pm.mic ? '' : '<p class="mute xs" style="text-align:center;margin-top:10px">Permite el micrófono para continuar.</p>'}</div>`;
-    $$('[data-p]', el).forEach(b => b.onclick = () => N.requestPerm(b.dataset.p));
+    $$('[data-p]', el).forEach(b => b.onclick = () => { if (b.dataset.p === 'battery') toast('Busca "Sueño" en la lista y elige "Sin restricciones"'); N.requestPerm(b.dataset.p); });
   }
   $('#ob-n').onclick = () => {
     if (obStep < 2) { obStep++; show('onboard', {}); return; }
@@ -594,6 +610,7 @@ function recover(live) {
 function routeTo(r) {
   if (!r) return;
   const lv = J(N.live(), {});
+  if (r === 'sunrise') { if (lv.ringing) go('alarm', {}, { reset: true }); else if (lv.recording) go('sunrise', {}, { reset: true }); return; }
   if (r === 'alarm') { if (lv.ringing) go('alarm', {}, { reset: true }); else if (lv.recording) go('recording', {}, { reset: true }); return; }
   if (r === 'stop' || r === 'alarmedit' || r === 'recording') { if (lv.recording) go('recording', { ask: r === 'stop' ? 'stop' : r === 'alarmedit' ? 'alarm' : '' }, { reset: true }); return; }
   if (lv.recording) { go('recording', {}, { reset: true }); return; }
@@ -608,18 +625,7 @@ window.onPerms = () => { if (current && ['onboard', 'settings'].includes(current
 window.onResumeApp = () => {
   invalidate();
   const lv = J(N.live(), {});
-  if (lv.ringing && current.v !== 'alarm') { go('alarm', {}, { reset: true }); return; }
-  if (lv.recording && !['recording', 'alarm'].includes(current.v)) { go('recording', {}, { reset: true }); return; }
+  if (lv.ringing && !['alarm', 'mission'].includes(current.v)) { go('alarm', {}, { reset: true }); return; }
+  if (lv.recording && !['recording', 'alarm', 'mission', 'sunrise'].includes(current.v)) { go('recording', {}, { reset: true }); return; }
   if (current && ['home', 'settings', 'stats', 'diary'].includes(current.v)) refresh();
 };
-(function boot() {
-  buildNav();
-  const lv = J(N.live(), {});
-  try { recover(lv); } catch (e) {}
-  if (!S.onboarded) go('onboard', {}, { reset: true });
-  else if (lv.ringing) go('alarm', {}, { reset: true });
-  else if (lv.recording) go('recording', {}, { reset: true });
-  else go('home', {}, { reset: true });
-  const r = N.takeRoute();
-  if (r && S.onboarded) routeTo(r);
-})();

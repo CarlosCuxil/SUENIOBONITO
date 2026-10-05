@@ -18,6 +18,7 @@ object Notif {
     const val N_REC = 1
     const val N_ALARM = 2
     const val N_REM = 3
+    const val N_SUNRISE = 4
 
     fun ensure(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java) ?: return

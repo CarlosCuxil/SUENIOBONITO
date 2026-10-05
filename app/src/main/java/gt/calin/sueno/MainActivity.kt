@@ -8,6 +8,10 @@ import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -17,11 +21,17 @@ import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.print.PrintAttributes
+import android.print.PrintManager
 import android.provider.MediaStore
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.util.Base64
+import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager
+import android.widget.FrameLayout
+import android.window.OnBackInvokedDispatcher
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -37,20 +47,42 @@ const val HOST = "sueno.local"
 
 class MainActivity : Activity() {
     lateinit var web: WebView
+    private lateinit var root: FrameLayout
     private var tts: TextToSpeech? = null
     @Volatile var pendingRoute: String? = null
     val ui = Handler(Looper.getMainLooper())
     private var loaded = false
+    private var printWeb: WebView? = null
+    @Volatile var shakes = 0
+    private var shakeListener: SensorEventListener? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Notif.ensure(this)
         val ink = Color.parseColor("#171A33")
-        window.statusBarColor = ink
-        window.navigationBarColor = ink
+        root = FrameLayout(this)
+        root.setBackgroundColor(ink)
         web = WebView(this)
         web.setBackgroundColor(ink)
-        setContentView(web)
+        root.addView(web, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        setContentView(root)
+        if (Build.VERSION.SDK_INT >= 30) {
+            // Pantalla completa de borde a borde (obligatorio en Android 15+): dejamos espacio a las barras del sistema
+            window.setDecorFitsSystemWindows(false)
+            root.setOnApplyWindowInsetsListener { v, insets ->
+                val b = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                v.setPadding(b.left, b.top, b.right, b.bottom)
+                WindowInsets.CONSUMED
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.statusBarColor = ink
+            @Suppress("DEPRECATION")
+            window.navigationBarColor = ink
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { handleBack() }
+        }
         with(web.settings) {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -116,7 +148,7 @@ class MainActivity : Activity() {
     private fun handleIntent(i: Intent?) {
         val r = i?.getStringExtra("route") ?: return
         i.removeExtra("route")
-        val alarm = r == "alarm"
+        val alarm = r == "alarm" || r == "sunrise"
         setShowWhenLocked(alarm)
         setTurnScreenOn(alarm)
         if (alarm) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -135,14 +167,36 @@ class MainActivity : Activity() {
         if (loaded) js("window.onResumeApp&&window.onResumeApp()")
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
+    private fun handleBack() {
         web.evaluateJavascript("window.onBack?window.onBack():false") { r ->
             if (r != "true") moveTaskToBack(true)
         }
     }
 
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        handleBack()
+    }
+
+    /** Color detrás de las barras del sistema (negro en la pantalla de noche). */
+    fun setChrome(color: String) {
+        ui.post {
+            try {
+                val c = Color.parseColor(color)
+                root.setBackgroundColor(c)
+                if (Build.VERSION.SDK_INT < 30) {
+                    @Suppress("DEPRECATION")
+                    window.statusBarColor = c
+                    @Suppress("DEPRECATION")
+                    window.navigationBarColor = c
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     override fun onDestroy() {
+        shakeStop()
         tts?.shutdown()
         super.onDestroy()
     }
@@ -163,6 +217,64 @@ class MainActivity : Activity() {
         ui.post {
             if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    fun setBrightness(v: Float) {
+        ui.post {
+            val lp = window.attributes
+            lp.screenBrightness = if (v < 0) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE else v.coerceIn(0.01f, 1f)
+            window.attributes = lp
+        }
+    }
+
+    fun shakeStart() {
+        ui.post {
+            shakeStop()
+            shakes = 0
+            val sm = getSystemService(SensorManager::class.java) ?: return@post
+            val acc = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return@post
+            var last = 0L
+            val l = object : SensorEventListener {
+                override fun onSensorChanged(ev: SensorEvent) {
+                    val x = ev.values[0]; val y = ev.values[1]; val z = ev.values[2]
+                    val g = Math.sqrt((x * x + y * y + z * z).toDouble()) - 9.81
+                    val now = System.currentTimeMillis()
+                    if (g > 6.5 && now - last > 220) {
+                        last = now
+                        shakes++
+                    }
+                }
+
+                override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+            }
+            shakeListener = l
+            sm.registerListener(l, acc, SensorManager.SENSOR_DELAY_GAME)
+        }
+    }
+
+    fun shakeStop() {
+        val l = shakeListener ?: return
+        try { getSystemService(SensorManager::class.java)?.unregisterListener(l) } catch (_: Exception) {}
+        shakeListener = null
+    }
+
+    fun printHtml(html: String) {
+        ui.post {
+            val w = WebView(this)
+            w.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String) {
+                    try {
+                        val pm = getSystemService(PrintManager::class.java)
+                        val attrs = PrintAttributes.Builder().setMediaSize(PrintAttributes.MediaSize.ISO_A4).build()
+                        pm?.print("Sueno-reporte", view.createPrintDocumentAdapter("Sueno-reporte"), attrs)
+                    } catch (_: Exception) {
+                        Toast.makeText(this@MainActivity, "No se pudo crear el PDF", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            printWeb = w
+            w.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
         }
     }
 
@@ -365,7 +477,7 @@ class Bridge(private val a: MainActivity) {
                             a.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, a.packageName))
                         }
                     }
-                    "battery" -> a.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${a.packageName}")))
+                    "battery" -> a.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                     "exact" -> if (Build.VERSION.SDK_INT >= 31) a.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${a.packageName}")))
                     "fullscreen" -> if (Build.VERSION.SDK_INT >= 34) a.startActivity(Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:${a.packageName}")))
                     "app" -> a.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${a.packageName}")))
@@ -438,6 +550,19 @@ class Bridge(private val a: MainActivity) {
     }
 
     @JavascriptInterface fun refreshWidget() = SleepWidget.refresh(ctx)
+
+    @JavascriptInterface fun setBrightness(v: Double) = a.setBrightness(v.toFloat())
+    @JavascriptInterface fun shakeStart() = a.shakeStart()
+    @JavascriptInterface fun shakeStop() = a.shakeStop()
+    @JavascriptInterface fun shakeCount(): Int = a.shakes
+    @JavascriptInterface fun printReport(html: String) = a.printHtml(html)
+    @JavascriptInterface fun rescheduleReminder() = Reminder.schedule(ctx)
+    @JavascriptInterface fun setChrome(color: String) = a.setChrome(color)
+    @JavascriptInterface fun appVersion(): String = try {
+        a.packageManager.getPackageInfo(a.packageName, 0).versionName ?: ""
+    } catch (_: Exception) {
+        ""
+    }
 
     @JavascriptInterface fun alarmSounds(): String = JSONArray(AlarmPlayer.sounds).toString()
 }

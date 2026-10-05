@@ -197,6 +197,35 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;heigh
 .dots i{width:7px;height:7px;border-radius:9px;background:var(--line);transition:width .3s,background .3s}
 .dots i.on{width:22px;background:var(--paper)}
 
+
+/* Herramientas */
+.tools{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:18px}
+.tool{background:var(--surface);border-radius:18px;padding:12px 4px 10px;display:flex;flex-direction:column;align-items:center;gap:7px;font-size:12px;text-align:center;transition:transform .12s}
+.tool:active{transform:scale(.94)}
+.tool .ibox{width:40px;height:40px}
+/* Logros */
+.medals{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:16px}
+.medal{background:var(--surface);border-radius:18px;padding:16px 12px;text-align:center;opacity:0;animation:pop .45s var(--ease) forwards}
+@keyframes pop{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:none}}
+.medal .disc{width:64px;height:64px;border-radius:50%;margin:0 auto 10px;display:grid;place-items:center;background:var(--deep);color:#4E4A76;border:2px dashed var(--line)}
+.medal.got .disc{background:radial-gradient(circle at 35% 30%,#F6D7A4,#E6A85C 55%,#B9783A);color:#3A2A14;border:0;box-shadow:0 0 24px rgba(230,168,92,.35)}
+.medal .mini{height:5px;border-radius:9px;background:var(--deep);margin:10px 6px 4px;overflow:hidden}
+.medal .mini i{display:block;height:100%;background:var(--lav)}
+/* Cronotipo */
+.chrono-disc{width:130px;height:130px;border-radius:50%;margin:0 auto;display:grid;place-items:center;background:radial-gradient(circle,rgba(255,255,255,.08),transparent 70%);animation:glow 6s ease-in-out infinite}
+/* Amanecer */
+#v-sunrise{padding:0;overflow:hidden;--p:0}
+.sr-night,.sr-dawn{position:absolute;inset:0}
+.sr-night{background:linear-gradient(180deg,#05060F,#10122A)}
+.sr-dawn{background:linear-gradient(180deg,#2A2F5C 0%,#5C4E7A 45%,#C98A5A 85%,#F2B866 100%);opacity:var(--p);transition:opacity 2s linear}
+.sr-sun{position:absolute;left:50%;bottom:-160px;width:460px;height:460px;margin-left:-230px;border-radius:50%;background:radial-gradient(circle,#FFE6B0 0%,rgba(255,200,120,.55) 35%,rgba(255,180,100,0) 70%);transform:translateY(calc((1 - var(--p)) * 260px));opacity:calc(.2 + var(--p) * .8);transition:transform 2s linear,opacity 2s linear}
+/* Misión */
+.keypad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:26px}
+.keypad button{height:62px;border-radius:18px;background:var(--surface);font-family:var(--serif);font-size:26px;display:grid;place-items:center;transition:transform .1s}
+.keypad button:active{transform:scale(.94)}
+.keypad .ok{background:var(--paper);color:var(--ink)}
+.wrong{animation:wrong .4s;color:var(--rose)}
+@keyframes wrong{0%,100%{transform:none}20%,60%{transform:translateX(-10px)}40%,80%{transform:translateX(10px)}}
 #toast{position:fixed;left:50%;bottom:calc(110px + var(--sb));transform:translate(-50%,20px);background:var(--paper);color:var(--ink);padding:12px 18px;border-radius:14px;font-weight:700;font-size:14px;opacity:0;pointer-events:none;transition:opacity .25s,transform .25s var(--ease);z-index:60;max-width:88%;text-align:center}
 #toast.on{opacity:1;transform:translate(-50%,0)}
 .meter{height:12px;background:var(--surface);border-radius:99px;overflow:hidden;margin-top:12px}
@@ -220,6 +249,13 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;heigh
   <section class="view" id="v-breathe"></section>
   <section class="view" id="v-settings"></section>
   <section class="view" id="v-report"></section>
+  <section class="view" id="v-nap"></section>
+  <section class="view" id="v-caffeine"></section>
+  <section class="view" id="v-plan"></section>
+  <section class="view" id="v-badges"></section>
+  <section class="view" id="v-chrono"></section>
+  <section class="view" id="v-sunrise"></section>
+  <section class="view" id="v-mission"></section>
 </div>
 <nav id="nav" class="hide"></nav>
 <div id="scrim"></div>
@@ -230,5 +266,6 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;heigh
 <script src="mock.js"></script>
 <script src="app.js"></script>
 <script src="app2.js"></script>
+<script src="app3.js"></script>
 </body>
 </html>

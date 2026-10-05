@@ -1,15 +1,18 @@
-# Sueño — app nativa para Android
+# Sueño — app para Android
 
-Monitor de sueño personal estilo Sleep Cycle: graba con la pantalla apagada,
-detecta ronquidos, habla y tos, estima fases de sueño, despertador inteligente,
-sonidos para dormir, respiración guiada, recordatorio para acostarte, diario,
-estadísticas, reporte semanal y widget.
+Monitor de sueño estilo Sleep Cycle: graba con la pantalla apagada, detecta ronquidos,
+habla, tos y posibles pausas al respirar, estima fases, despertador inteligente con
+amanecer y misión, modo colchón, anti-ronquido, siesta, sonidos para dormir,
+respiración guiada, cafeína, clima, plan de horario, cronotipo, logros, diario,
+estadísticas, reporte semanal, PDF para el médico y widget.
 
-## Cómo se compila
-Cada vez que subes cambios a la rama main, GitHub Actions compila el APK solo
-(pestaña Actions) y lo publica en Releases como Sueno.apk.
+## Compilación
+Cada cambio en la rama main compila solo (pestaña Actions) y publica en Releases:
+- Sueno.apk: para instalar directo en el celular.
+- Sueno-PlayStore.aab: para Google Play (requiere los secrets de la llave privada).
 
 ## Estructura
-- app/src/main/java/gt/calin/sueno/ : parte nativa (grabación, alarma, sonidos, widget)
+- app/src/main/java/gt/calin/sueno/ : parte nativa (grabación, alarma, sonidos, sensores, widget)
 - app/src/main/assets/www/ : interfaz (pantallas, gráficas, animaciones)
+- privacidad.html : política de privacidad (GitHub Pages)
 - .github/workflows/build.yml : compilación automática

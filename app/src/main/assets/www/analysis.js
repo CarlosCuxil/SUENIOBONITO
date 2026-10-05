@@ -27,6 +27,8 @@ function analyze(n, defGoal = 8) {
   if (!Mn) return { empty: true, noSleep: true, counts, score: 0, inBed: 0, sleepMin: 0, goal, depth: [], marks: [] };
   const act = new Array(Mn).fill(0), sn = new Array(Mn).fill(0);
   const marks = [];
+  // Modo colchón: segundos con movimiento en cada minuto
+  n.minutes.forEach((m, i) => { if (Array.isArray(m) && m.length > 2 && m[2] > 0) act[i] += Math.min(3, m[2] / 4); });
   for (const e of n.events || []) {
     const i = Math.floor((e.t - n.start) / 60000);
     const ty = e.type === 'posible' ? 'movimiento' : e.type;
@@ -37,20 +39,34 @@ function analyze(n, defGoal = 8) {
     if (ty === 'habla' || ty === 'tos') marks.push({ i, type: ty });
   }
   const restless = act.map(a => a >= 2);
+  const QW = n.nap ? 5 : 15;
   let quiet = -1;
-  for (let i = 0; i + 15 <= Mn; i++) {
+  for (let i = 0; i + QW <= Mn; i++) {
     let ok = true;
-    for (let j = i; j < i + 15; j++) if (restless[j]) { ok = false; break; }
+    for (let j = i; j < i + QW; j++) if (restless[j]) { ok = false; break; }
     if (ok) { quiet = i; break; }
   }
-  if (quiet < 0 && Mn < 15 && !restless.some(Boolean)) quiet = 0;
+  if (quiet < 0 && Mn < QW && !restless.some(Boolean)) quiet = 0;
+  // Posibles pausas: silencio de 10 a 60 s en medio de ronquidos seguidos
+  const sev = (n.events || []).filter(e => e.type === 'ronquido').sort((a, b) => a.t - b.t);
+  const pauseIdx = [];
+  for (let k = 2; k < sev.length - 1; k++) {
+    const gap = sev[k].t - sev[k - 1].t;
+    if (gap >= 10000 && gap <= 60000 && sev[k - 1].t - sev[k - 2].t < 9000 && sev[k + 1].t - sev[k].t < 9000) {
+      const i = Math.floor((sev[k - 1].t - n.start) / 60000);
+      if (i >= 0 && i < Mn) { pauseIdx.push(i); marks.push({ i, type: 'pausa' }); }
+    }
+  }
+  // Anti-ronquido: ¿dejaste de roncar después del aviso?
+  const nudges = n.nudges || [];
+  const nudgeOk = nudges.filter(t => !sev.some(e => e.t > t + 5000 && e.t < t + 120000)).length;
   const firstSnore = sn.findIndex(x => x >= 2);
   const cands = [quiet, firstSnore].filter(x => x >= 0);
   const onset = cands.length ? Math.min(...cands) : -1;
   const hourly = Mn / 60 || 1;
   const noise = counts.ruido / hourly < 1 ? 'Tranquilo' : counts.ruido / hourly < 4 ? 'Algo de ruido' : 'Ruidoso';
   if (onset < 0) {
-    return { noSleep: true, counts, inBed: Mn, sleepMin: 0, score: 0, onsetTs: null, wakeTs: n.start + Mn * 60000, depth: new Array(Mn).fill(0), snoreIdx: [], marks, latency: Mn, awakenings: 0, awakeMin: Mn, eff: 0, deepMin: 0, lightMin: 0, snoreMin: 0, snorePct: 0, goal, noise };
+    return { noSleep: true, counts, inBed: Mn, sleepMin: 0, score: 0, onsetTs: null, wakeTs: n.start + Mn * 60000, depth: new Array(Mn).fill(0), snoreIdx: [], marks, latency: Mn, awakenings: 0, awakeMin: Mn, eff: 0, deepMin: 0, lightMin: 0, snoreMin: 0, snorePct: 0, goal, noise, pauses: 0, pph: 0, pauseIdx: [], nudges: nudges.length, nudgeOk };
   }
   let wake = Mn;
   while (wake - 1 > onset && restless[wake - 1]) wake--;
@@ -80,21 +96,24 @@ function analyze(n, defGoal = 8) {
   const sleepMin = Math.max(0, wake - onset - awakeMin);
   const inBed = Mn, eff = inBed ? sleepMin / inBed : 0, h = sleepMin / 60;
   const snorePct = sleepMin ? snoreMin / sleepMin : 0;
-  const pDur = 35 * clamp(1 - Math.max(0, (goal - 0.5) - h, h - (goal + 1.5)) / 3);
+  const pDur = (n.nap ? 0 : 35) * clamp(1 - Math.max(0, (goal - 0.5) - h, h - (goal + 1.5)) / 3);
   const pEff = 25 * clamp((eff - 0.65) / 0.27);
   const pLat = 10 * clamp(1 - (onset - 20) / 40);
   const pAwk = 10 * clamp(1 - awakenings / 4);
   const pSn = 10 * clamp(1 - snorePct / 0.35);
   const pDeep = 10 * clamp(sleepMin ? (deepMin / sleepMin) / 0.25 : 0);
-  const score = Math.round(pDur + pEff + pLat + pAwk + pSn + pDeep);
+  let score = Math.round(pDur + pEff + pLat + pAwk + pSn + pDeep);
+  if (n.nap) score = Math.round(score / 65 * 100);
   return {
     counts, inBed, sleepMin, score, eff, latency: onset, awakenings, awakeMin: inBed - sleepMin, deepMin, lightMin, snoreMin, snorePct, goal, noise,
     onsetTs: n.start + onset * 60000, wakeTs: n.start + wake * 60000, depth, snoreIdx, marks,
+    pauses: pauseIdx.length, pph: sleepMin ? pauseIdx.length / (sleepMin / 60) : 0, pauseIdx, nudges: nudges.length, nudgeOk,
   };
 }
 
-function verdict(s) {
+function verdict(s, nap) {
   if (!s || s.noSleep) return 'No se detectó sueño';
+  if (nap) return s.score >= 70 ? 'Buena siesta' : 'Siesta ligera';
   if (s.score >= 80) return 'Dormiste muy bien';
   if (s.score >= 65) return 'Buena noche';
   if (s.score >= 50) return 'Noche regular';
@@ -120,6 +139,11 @@ function tipsFor(n, history) {
   const s = n.summary, t = [], tags = n.tags || [];
   const good = history.filter(x => x.summary && !x.summary.noSleep);
   if (s.noSleep) return [{ i: 'mic', c: '#A89BE0', h: 'No hubo suficiente silencio para detectar sueño', b: 'Revisa que el cel esté cerca de tu cabeza. Si tu cuarto tiene ruido constante, baja la sensibilidad en Ajustes.' }];
+  if (n.nap) {
+    const m = s.inBed;
+    return [m <= 30 ? { i: 'sparkles', c: '#78B3A6', h: 'Siesta corta, bien hecho', b: 'Hasta 30 minutos recarga energía sin dejarte atontado ni quitarte el sueño de la noche.' }
+      : { i: 'clock', c: '#A89BE0', h: 'Siesta larga', b: 'Las siestas de más de 30 minutos pueden dejarte pesado y hacer que te cueste dormir en la noche. Mejor antes de las 3 p. m.' }];
+  }
   const h = s.sleepMin / 60, goal = s.goal || 8;
   if (h < goal - 0.75) {
     const bed = new Date(s.wakeTs - (goal * 60 + 15) * 60000);
@@ -134,6 +158,8 @@ function tipsFor(n, history) {
   }
   if (s.snorePct > 0.1) t.push({ i: 'wine', c: '#E6A85C', h: `Roncaste ${Math.round(s.snorePct * 100)}% de la noche`, b: 'Dormir de lado suele reducirlo. También ayuda evitar alcohol y cenas pesadas antes de dormir.' + (tags.includes('Alcohol') ? ' Anotaste alcohol, que relaja la garganta y aumenta los ronquidos.' : '') });
   if (s.snorePct > 0.3 && good.filter(x => x.summary.snorePct > 0.3).length >= 4) t.push({ i: 'shield', c: '#D98C8C', h: 'Ronquidos fuertes varias noches', b: 'Si además te despiertas cansado o con dolor de cabeza, coméntalo con un médico; a veces es apnea del sueño.' });
+  if (s.pph >= 5 && s.pauses >= 5) t.push({ i: 'lungs', c: '#D98C8C', h: `${s.pauses} posibles pausas al respirar`, b: 'Hubo silencios largos en medio de tus ronquidos. No es un diagnóstico, pero si pasa varias noches y te despiertas cansado, coméntalo con un médico.' });
+  if (n.caffeine >= 50) t.push({ i: 'coffee', c: '#E6A85C', h: `Te acostaste con ${Math.round(n.caffeine)} mg de cafeína`, b: 'Más de 50 mg al dormir suele hacer el sueño más ligero. Revisa en Cafeína a qué hora te conviene el último café.' });
   if (s.awakenings >= 3) t.push({ i: 'turn', c: '#D98C8C', h: `Te despertaste ${s.awakenings} veces`, b: 'Un cuarto fresco, oscuro y sin ruido ayuda a no interrumpir el sueño. Evita líquidos en la última hora.' });
   if (s.counts.ruido >= 8) t.push({ i: 'rain', c: '#A89BE0', h: 'Hubo bastante ruido', b: 'Prueba un sonido para dormir como lluvia o ventilador para tapar los ruidos de afuera.' });
   if (s.counts.habla >= 2) t.push({ i: 'talk', c: '#A89BE0', h: 'Hablaste dormido', b: 'Es común y casi siempre inofensivo; aumenta con estrés y falta de sueño. Escucha los audios abajo.' });
@@ -161,4 +187,68 @@ function streak(nights) {
 function debt(nights, goal) {
   const since = Date.now() - 7 * 86400e3;
   return nights.filter(n => n.start >= since && !n.summary.noSleep).reduce((a, n) => a + Math.max(0, goal * 60 - n.summary.sleepMin), 0);
+}
+
+/* ---------- Cafeína ---------- */
+const CAF = [['cafe', 'Café', 95, 'coffee'], ['espresso', 'Espresso', 63, 'coffee'], ['te', 'Té', 40, 'leaf'], ['cola', 'Refresco de cola', 35, 'cup'], ['energetica', 'Bebida energética', 80, 'zap'], ['chocolate', 'Chocolate', 20, 'cup']];
+const HALF = 5 * 3600e3;
+function caffeineAt(log, ts) { return (log || []).reduce((a, d) => d.t <= ts ? a + d.mg * Math.pow(.5, (ts - d.t) / HALF) : a, 0); }
+function lastCoffeeTime(bedTs, log, mg = 95, limit = 50) {
+  // A qué hora tomar el último café para llegar a la cama con menos de "limit"
+  const base = caffeineAt(log, bedTs);
+  const room = limit - base;
+  if (room <= 0) return null;
+  const hrs = 5 * Math.log2(mg / room);
+  return bedTs - Math.max(0, hrs) * 3600e3;
+}
+
+/* ---------- Cronotipo ---------- */
+function midSleep(n) { const o = clockMin(n.summary.onsetTs); let w = clockMin(n.summary.wakeTs); if (w < o) w += 1440; return (o + w) / 2; }
+function chronotype(list, goal) {
+  const ok = list.filter(n => !n.nap && n.summary.onsetTs && !n.summary.noSleep);
+  if (ok.length < 5) return null;
+  const avg = l => l.reduce((a, n) => a + midSleep(n), 0) / l.length;
+  const free = ok.filter(n => [5, 6].includes(nightDate(n.start).getDay()));
+  const work = ok.filter(n => ![5, 6].includes(nightDate(n.start).getDay()));
+  const all = avg(ok), msf = free.length ? avg(free) : all, msw = work.length ? avg(work) : all;
+  const mid = (msf - 1440 + 1440) % 1440;
+  const type = mid < 180 ? 'alondra' : mid < 270 ? 'intermedio' : 'buho';
+  return { type, mid: msf, midWork: msw, sjl: Math.abs(msf - msw), freeN: free.length, workN: work.length, bed: msf - goal * 30, wake: msf + goal * 30, n: ok.length };
+}
+
+/* ---------- Logros ---------- */
+function maxStreak(list) {
+  const keys = [...new Set(list.map(n => nightKey(n.start)))].sort();
+  let best = 0, cur = 0, prev = null;
+  for (const k of keys) {
+    const d = new Date(k + 'T12:00:00');
+    if (prev && (d - prev) / 86400e3 < 1.5) cur++; else cur = 1;
+    best = Math.max(best, cur); prev = d;
+  }
+  return best;
+}
+function goalStreak(list, goal) {
+  const ok = new Set(list.filter(n => n.summary.sleepMin >= goal * 60 - 30).map(n => nightKey(n.start)));
+  return maxStreak(list.filter(n => ok.has(nightKey(n.start))));
+}
+function badgeList(list, naps, S) {
+  const good = list.filter(n => !n.summary.noSleep);
+  const ms = maxStreak(list);
+  const P = (cur, goal) => [Math.min(cur, goal), goal];
+  return [
+    { id: 'primera', name: 'Primera noche', desc: 'Graba tu primera noche', icon: 'moon', prog: P(list.length, 1) },
+    { id: 'racha3', name: 'Constante', desc: '3 noches seguidas', icon: 'flame', prog: P(ms, 3) },
+    { id: 'racha7', name: 'Semana completa', desc: '7 noches seguidas', icon: 'flame', prog: P(ms, 7) },
+    { id: 'racha30', name: 'Imparable', desc: '30 noches seguidas', icon: 'trophy', prog: P(ms, 30) },
+    { id: 'meta5', name: 'En la meta', desc: 'Cumple tu meta de horas 5 noches', icon: 'target', prog: P(good.filter(n => n.summary.sleepMin >= S.goal * 60 - 30).length, 5) },
+    { id: 'semanaperfecta', name: 'Semana perfecta', desc: '7 noches seguidas cumpliendo tu meta', icon: 'sparkles', prog: P(goalStreak(good, S.goal), 7) },
+    { id: 'calidad90', name: 'Sueño de oro', desc: 'Una noche con 90% o más', icon: 'medal', prog: P(good.some(n => n.summary.score >= 90) ? 1 : 0, 1) },
+    { id: 'madrugador', name: 'Madrugador', desc: 'Despierta antes de las 6:00 cinco veces', icon: 'sun', prog: P(good.filter(n => new Date(n.summary.wakeTs).getHours() < 6).length, 5) },
+    { id: 'silencio', name: 'Silencioso', desc: '3 noches casi sin ronquidos', icon: 'volume', prog: P(good.filter(n => n.summary.sleepMin > 240 && n.summary.snorePct < .05).length, 3) },
+    { id: 'zen', name: 'Zen', desc: '10 sesiones de respiración', icon: 'lungs', prog: P(S.breathCount || 0, 10) },
+    { id: 'cafeina', name: 'Café a tiempo', desc: '5 noches con menos de 50 mg de cafeína al dormir', icon: 'coffee', prog: P(good.filter(n => n.caffeine != null && n.caffeine < 50).length, 5) },
+    { id: 'siesta', name: 'Rey de la siesta', desc: '5 siestas grabadas', icon: 'bed', prog: P(naps.length, 5) },
+    { id: 'soñador', name: 'Soñador', desc: 'Anota 5 sueños', icon: 'book', prog: P(list.concat(naps).filter(n => n.dream && n.dream.trim()).length, 5) },
+    { id: 'plan', name: 'Horario nuevo', desc: 'Termina un plan de 2 semanas', icon: 'flag', prog: P(S.planDone ? 1 : 0, 1) },
+  ].map(b => ({ ...b, done: b.prog[0] >= b.prog[1] }));
 }
