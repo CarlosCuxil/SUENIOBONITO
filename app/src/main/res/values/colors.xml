@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ink">#171A33</color>
+    <color name="deep">#10122A</color>
+    <color name="surface">#21254A</color>
+    <color name="paper">#ECE6D6</color>
+    <color name="mute">#9A97B8</color>
+    <color name="amber">#E6A85C</color>
+    <color name="teal">#78B3A6</color>
+</resources>
