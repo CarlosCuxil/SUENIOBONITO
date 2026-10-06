@@ -19,6 +19,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Descomprimir proyecto.zip
+        run: |
+          if [ -f proyecto.zip ]; then
+            rm -rf app
+            unzip -q -o proyecto.zip
+            echo "Proyecto descomprimido"
+          else
+            echo "No hay proyecto.zip, se usa la carpeta app del repo"
+          fi
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -53,8 +63,8 @@ jobs:
       - name: Publicar en Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.1.${{ github.run_number }}
-          name: Sueño v1.1.${{ github.run_number }}
+          tag_name: v1.2.${{ github.run_number }}
+          name: Sueño v1.2.${{ github.run_number }}
           body: |
             Sueno.apk: descárgalo en tu Android e instálalo.
             Sueno-PlayStore.aab: el archivo que se sube a Google Play Console (solo aparece si configuraste la llave).
