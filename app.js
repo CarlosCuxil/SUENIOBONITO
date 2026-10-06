@@ -1,947 +1,582 @@
 'use strict';
 /* =========================================================
-   Sueño — monitor de sueño personal (PWA)
+   Sueño — interfaz
    ========================================================= */
-const $ = s => document.querySelector(s);
-const $$ = s => [...document.querySelectorAll(s)];
-const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const N = window.Android || window.MockBridge;
+const NATIVE = !!window.Android;
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const J = (s, d) => { try { return s ? JSON.parse(s) : d; } catch (e) { return d; } };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const range = n => [...Array(n).keys()];
 
 /* ---------- Ajustes ---------- */
-const DEFAULTS = { goal: 8, sens: 'media', alarmOn: true, wake: '06:30', win: 30, aid: 'ninguno', aidMin: 30, aidVol: 0.35, lastTags: [] };
-function loadSettings() { try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('sueno-ajustes') || '{}') }; } catch (e) { return { ...DEFAULTS }; } }
-function saveSettings() { try { localStorage.setItem('sueno-ajustes', JSON.stringify(S)); } catch (e) {} }
-let S = loadSettings();
-const SENS = { baja: 12, media: 9, alta: 6 };
-const TAGS = ['Café', 'Alcohol', 'Ejercicio', 'Estrés', 'Cena pesada', 'Siesta', 'Pantallas tarde', 'Trabajé tarde', 'Medicina', 'Enfermo', 'Cuarto caliente', 'Dormí acompañado'];
-const TYPE_LABEL = { ronquido: 'Ronquidos', habla: 'Hablar dormido', tos: 'Tos', movimiento: 'Movimientos', ruido: 'Ruidos' };
+const DEF = {
+  onboarded: false, goal: 8, sens: 'media',
+  alarmOn: true, wake: '06:30', win: 30, alarmSound: 'amanecer', vibrate: true, ramp: true, snooze: 9,
+  aidTypes: [], aidVols: {}, aidMin: 30, relaxTypes: ['lluvia'], relaxVols: {}, relaxMin: 30,
+  breatheBefore: false, breathTech: '478', breathVib: true, breathVoice: false,
+  reminderOn: false, reminderTime: '21:45', reminderDays: [0, 1, 2, 3, 4],
+  saveClips: true, cleanDays: 30, customTags: [], lastTags: [],
+  mattress: false, sunrise: false, mission: 'ninguna', antiSnore: 'off', antiSnoreLevel: .5,
+  caffeineLog: [], city: null, breathCount: 0, badges: [], plan: null, planTimes: {}, planDone: false,
+};
+let S = { ...DEF, ...J(N.getSettings(), {}) };
+function saveS() { N.setSettings(JSON.stringify(S)); }
 
-/* ---------- Base de datos (IndexedDB) ---------- */
-const db = (() => {
-  let p;
-  function open() {
-    if (p) return p;
-    p = new Promise((res, rej) => {
-      const r = indexedDB.open('sueno', 1);
-      r.onupgradeneeded = () => {
-        const d = r.result;
-        d.createObjectStore('nights', { keyPath: 'id' });
-        d.createObjectStore('clips', { keyPath: 'id' }).createIndex('night', 'nightId');
-      };
-      r.onsuccess = () => res(r.result);
-      r.onerror = () => rej(r.error);
-    });
-    return p;
+const TAGS = [['Café', 'coffee'], ['Alcohol', 'wine'], ['Ejercicio', 'dumbbell'], ['Estrés', 'zap'], ['Cena pesada', 'utensils'], ['Pantallas tarde', 'phone'], ['Trabajé tarde', 'briefcase'], ['Calor', 'thermo'], ['Medicina', 'pill'], ['Siesta', 'bed'], ['Acompañado', 'users']];
+const MORNING = [['Me despertaron', 'users'], ['Me levanté al baño', 'bed'], ['Soñé mucho', 'sparkles'], ['Pesadillas', 'zap'], ['Dolor de cabeza', 'thermo']];
+const SOUNDS = [['lluvia', 'Lluvia', 'rain'], ['olas', 'Olas', 'waves'], ['bosque', 'Bosque', 'trees'], ['ventilador', 'Ventilador', 'fan'], ['fogata', 'Fogata', 'flame'], ['viento', 'Viento', 'wind'], ['cafe', 'Ruido café', 'volume'], ['blanco', 'Ruido blanco', 'sparkles']];
+const SOUND_NAME = Object.fromEntries(SOUNDS.map(s => [s[0], s[1]]));
+const ALARM_SOUNDS = [['amanecer', 'Amanecer suave', 'Notas que suben como un amanecer'], ['campanas', 'Campanas', 'Campanas tranquilas'], ['pajaros', 'Pájaros', 'Trinos de pájaros'], ['clasica', 'Clásica', 'Pitidos de despertador']];
+const tagIcon = t => (TAGS.find(x => x[0] === t) || MORNING.find(x => x[0] === t) || [t, 'flag'])[1];
+
+/* ---------- Datos ---------- */
+let cache = null;
+let allCache = null;
+function allNights() {
+  if (!allCache) allCache = J(N.listNights(), []).filter(n => n.status === 'done' && n.summary).sort((a, b) => b.start - a.start);
+  return allCache;
+}
+function nights() { if (!cache) cache = allNights().filter(n => !n.nap); return cache; }
+function naps() { return allNights().filter(n => n.nap); }
+function invalidate() { cache = null; allCache = null; }
+function getNight(id) { return J(N.getNight(id), null); }
+function saveNight(n) { N.saveNight(JSON.stringify(n)); invalidate(); }
+function finalize(id, extra = {}) {
+  const n = getNight(id);
+  if (!n) return null;
+  if (!n.end) n.end = n.start + (n.minutes || []).length * 60000;
+  n.status = 'done';
+  Object.assign(n, extra);
+  n.summary = analyze(n, S.goal);
+  saveNight(n);
+  return n;
+}
+function wakeTsFrom(hhmm) {
+  const [h, m] = hhmm.split(':').map(Number);
+  const d = new Date(); d.setHours(h, m, 0, 0);
+  if (d.getTime() <= Date.now() + 60000) d.setDate(d.getDate() + 1);
+  return d.getTime();
+}
+function bedtimeFor(wake, goal) { const [h, m] = wake.split(':').map(Number); return fmtClockMin(h * 60 + m - goal * 60 - 15 + 1440); }
+
+/* ---------- Avisos y hojas ---------- */
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('on');
+  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('on'), 2600);
+}
+let sheetOpen = false, sheetClose = null;
+function openSheet(html, onMount, onClose) {
+  const sh = $('#sheet');
+  sh.innerHTML = '<div class="grab"></div>' + html;
+  sh.scrollTop = 0;
+  $('#scrim').classList.add('on');
+  requestAnimationFrame(() => sh.classList.add('on'));
+  sheetOpen = true; sheetClose = onClose || null;
+  if (onMount) onMount(sh);
+  return sh;
+}
+function closeSheet() {
+  if (!sheetOpen) return;
+  $('#sheet').classList.remove('on'); $('#scrim').classList.remove('on');
+  sheetOpen = false;
+  const f = sheetClose; sheetClose = null;
+  if (f) f();
+}
+$('#scrim').addEventListener('click', closeSheet);
+function confirmSheet(title, text, ok, danger, onOk) {
+  openSheet(`<h2>${title}</h2><p class="mute" style="margin:6px 0 22px">${text}</p>
+    <button class="btn ${danger ? 'danger' : 'main'}" id="c-ok" style="width:100%">${ok}</button>
+    <button class="btn" id="c-no" style="width:100%;margin-top:8px;color:var(--mute)">Cancelar</button>`, sh => {
+    $('#c-ok', sh).onclick = () => { closeSheet(); onOk(); };
+    $('#c-no', sh).onclick = closeSheet;
+  });
+}
+
+/* ---------- Componentes ---------- */
+function stars(n, h = 320) {
+  let o = '';
+  for (let i = 0; i < n; i++) {
+    const sz = Math.random() < .15 ? 3 : 2;
+    o += `<i class="star" style="left:${Math.random() * 100}%;top:${Math.random() * h}px;width:${sz}px;height:${sz}px;animation-delay:${(Math.random() * 4).toFixed(2)}s;animation-duration:${(3 + Math.random() * 4).toFixed(1)}s"></i>`;
   }
-  async function tx(store, mode, fn) {
-    const d = await open();
-    return new Promise((res, rej) => {
-      const t = d.transaction(store, mode);
-      let out;
-      const r = fn(t.objectStore(store));
-      if (r) r.onsuccess = () => { out = r.result; };
-      t.oncomplete = () => res(out);
-      t.onerror = () => rej(t.error);
-      t.onabort = () => rej(t.error);
+  return o;
+}
+const MOON = `<svg class="moon" width="84" height="84" viewBox="0 0 84 84"><defs><radialGradient id="mg" cx=".35" cy=".35"><stop offset="0" stop-color="#FFF6DF"/><stop offset=".6" stop-color="#E9DDBE"/><stop offset="1" stop-color="#CFC09A"/></radialGradient><mask id="mm"><rect width="84" height="84" fill="#fff"/><circle cx="62" cy="28" r="34" fill="#000"/></mask></defs><circle cx="42" cy="42" r="38" fill="url(#mg)" mask="url(#mm)"/></svg>`;
+
+let ringId = 0;
+function ring(size, pct, stroke = 10, label = '') {
+  const r = (size - stroke) / 2, c = 2 * Math.PI * r, id = 'rg' + (++ringId);
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" class="ringsvg">
+    <defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#A89BE0"/><stop offset="1" stop-color="#78B3A6"/></linearGradient></defs>
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="#2A2F5C" stroke-width="${stroke}"/>
+    <circle class="ringarc" data-off="${c * (1 - pct / 100)}" cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="url(#${id})" stroke-width="${stroke}" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c}" transform="rotate(-90 ${size / 2} ${size / 2})" style="transition:stroke-dashoffset 1.4s cubic-bezier(.2,.8,.2,1)"/>
+    <text x="50%" y="${label ? '47%' : '50%'}" text-anchor="middle" dominant-baseline="central" fill="#ECE6D6" font-family="Fraunces" font-weight="300" font-size="${size * .3}"><tspan class="countup" data-to="${pct}">0</tspan><tspan font-size="${size * .12}" fill="#9A97B8">%</tspan></text>
+    ${label ? `<text x="50%" y="${size * .7}" text-anchor="middle" fill="#9A97B8" font-size="${size * .085}" font-family="Atkinson">${label}</text>` : ''}</svg>`;
+}
+function animateIn(root) {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    $$('.ringarc', root).forEach(a => a.setAttribute('stroke-dashoffset', a.dataset.off));
+    $$('.countup', root).forEach(el => {
+      const to = +el.dataset.to, t0 = performance.now(), D = 1300;
+      const step = t => { const p = Math.min(1, (t - t0) / D), e = 1 - Math.pow(1 - p, 3); el.textContent = Math.round(to * e); if (p < 1) requestAnimationFrame(step); };
+      requestAnimationFrame(step);
     });
+    $$('[data-w]', root).forEach(el => { el.style.width = el.dataset.w; });
+  }));
+  $$('.drawline', root).forEach(p => { try { p.style.setProperty('--len', Math.ceil(p.getTotalLength()) + 1); } catch (e) {} });
+}
+
+/* Gráfica de la noche */
+function hypSvg(n, W, H, compact) {
+  const s = n.summary || {}, d = s.depth || [], L = d.length;
+  if (L < 2) return `<svg width="${W}" height="${H}"></svg>`;
+  const mx = compact ? Math.max(0.01, ...d) : 1;
+  const pl = compact ? 0 : 62, pb = compact ? 2 : 22, sn = compact ? 0 : 12, top = 4, bot = H - pb - sn - 4, cw = W - pl - 4;
+  const X = i => pl + i / (L - 1) * cw, Y = v => top + (compact ? v / mx * .95 : v) * (bot - top);
+  const step = Math.max(1, Math.floor(L / 150));
+  let px = X(0), py = Y(d[0]), path = `M${px.toFixed(1)},${py.toFixed(1)}`;
+  for (let i = step; i < L; i += step) {
+    let a = 0, c = 0; for (let j = i - step + 1; j <= i; j++) { a += d[j]; c++; }
+    const x = X(Math.min(i, L - 1)), y = Y(a / c), xm = (px + x) / 2;
+    path += ` C${xm.toFixed(1)},${py.toFixed(1)} ${xm.toFixed(1)},${y.toFixed(1)} ${x.toFixed(1)},${y.toFixed(1)}`;
+    px = x; py = y;
   }
-  return {
-    put: (s, o) => tx(s, 'readwrite', st => st.put(o)),
-    get: (s, k) => tx(s, 'readonly', st => st.get(k)),
-    all: s => tx(s, 'readonly', st => st.getAll()),
-    del: (s, k) => tx(s, 'readwrite', st => st.delete(k)),
-    clear: s => tx(s, 'readwrite', st => st.clear()),
-    clipsFor: id => tx('clips', 'readonly', st => st.index('night').getAll(id)),
+  const gid = 'hg' + (++ringId);
+  let o = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#A89BE0" stop-opacity=".04"/><stop offset=".5" stop-color="#A89BE0" stop-opacity=".22"/><stop offset="1" stop-color="#78B3A6" stop-opacity=".65"/></linearGradient></defs>`;
+  if (!compact) {
+    o += `<rect x="${pl}" y="${top}" width="${cw}" height="${(bot - top) * .15}" fill="#D98C8C" opacity=".07"/><rect x="${pl}" y="${top + (bot - top) * .6}" width="${cw}" height="${(bot - top) * .4}" fill="#78B3A6" opacity=".07"/>`;
+    [['Despierto', .07], ['Ligero', .37], ['Profundo', .8]].forEach(([l, y]) => o += `<text x="0" y="${top + y * (bot - top) + 4}" fill="#9A97B8" font-size="12" font-family="Atkinson">${l}</text>`);
+    [.15, .6].forEach(y => o += `<line x1="${pl}" x2="${W}" y1="${top + y * (bot - top)}" y2="${top + y * (bot - top)}" stroke="#9A97B8" stroke-opacity=".15"/>`);
+  }
+  o += `<path class="fadein" d="${path} L${X(L - 1)},${top} L${X(0)},${top} Z" fill="url(#${gid})"/><path class="drawline" d="${path}" fill="none" stroke="#78B3A6" stroke-width="${compact ? 1.6 : 2.2}" stroke-linejoin="round" stroke-linecap="round"/>`;
+  if (!compact) {
+    const segs = []; let a = null, prev = -9;
+    for (const i of s.snoreIdx || []) { if (i - prev > 2) { if (a !== null) segs.push([a, prev]); a = i; } prev = i; }
+    if (a !== null) segs.push([a, prev]);
+    segs.forEach(([x0, x1]) => o += `<rect class="fadein" x="${X(x0)}" y="${bot + 6}" width="${Math.max(3, X(x1 + 1) - X(x0))}" height="${sn - 2}" rx="2" fill="#E6A85C"/>`);
+    (s.marks || []).forEach(m => o += `<circle class="fadein" cx="${X(m.i)}" cy="${bot + 11}" r="${m.type === 'pausa' ? 2.6 : 3.5}" fill="${m.type === 'tos' ? '#D98C8C' : m.type === 'pausa' ? '#ECE6D6' : '#A89BE0'}"/>`);
+    const first = new Date(n.start); first.setMinutes(0, 0, 0); first.setHours(first.getHours() + 1);
+    const hrs = L / 60, every = cw / hrs >= 38 ? 1 : 2;
+    for (let t = first.getTime(); t < n.start + L * 60000; t += every * 3600e3) {
+      const i = (t - n.start) / 60000, x = X(i);
+      if (x < pl + 12 || x > W - 14) continue;
+      o += `<text x="${x}" y="${H - 4}" fill="#9A97B8" font-size="11" text-anchor="middle" font-family="Fraunces">${pad2(new Date(t).getHours())}:00</text>`;
+    }
+  }
+  return o + '</svg>';
+}
+function attachGraphTip(wrap, n, W) {
+  const s = n.summary, d = s.depth || [], L = d.length; if (L < 2) return;
+  const pl = 62, cw = W - pl - 4;
+  const tip = $('.tip', wrap), cur = $('.cursor', wrap);
+  let hideT;
+  const show = ev => {
+    const r = wrap.getBoundingClientRect(); const x = ev.clientX - r.left;
+    if (x < pl) return;
+    const i = Math.round(clamp((x - pl) / cw) * (L - 1));
+    const ts = n.start + i * 60000;
+    let what = i < (s.onsetTs - n.start) / 60000 ? 'Despierto' : phaseAt(d[i]);
+    if ((s.snoreIdx || []).includes(i)) what += ', roncando';
+    tip.textContent = `${fmtTime(ts)}  ${what}`;
+    const xx = pl + i / (L - 1) * cw;
+    tip.style.left = clamp(xx, 70, W - 70) + 'px'; cur.style.left = xx + 'px';
+    tip.classList.add('on'); cur.classList.add('on');
+    clearTimeout(hideT); hideT = setTimeout(() => { tip.classList.remove('on'); cur.classList.remove('on'); }, 2200);
   };
-})();
-async function nightsSorted() { return (await db.all('nights')).filter(n => n.status === 'done').sort((a, b) => b.start - a.start); }
-async function deleteNight(id) {
-  const cl = await db.clipsFor(id);
-  for (const c of cl) await db.del('clips', c.id);
-  await db.del('nights', id);
+  wrap.addEventListener('pointerdown', show);
+  wrap.addEventListener('pointermove', e => { if (e.buttons || e.pointerType === 'touch') show(e); });
+}
+function waveBars(n, h = 22, seed = 5, col = '#9A97B8') {
+  let s = seed; const r = () => ((s = (s * 9301 + 49297) % 233280) / 233280);
+  let o = `<svg width="${n * 4}" height="${h}">`;
+  for (let i = 0; i < n; i++) { const v = Math.max(.12, Math.abs(Math.sin(i / 3.2)) * .7 + r() * .3); o += `<rect x="${i * 4}" y="${(h - v * h) / 2}" width="2.4" height="${v * h}" rx="1.2" fill="${col}"/>`; }
+  return o + '</svg>';
 }
 
-/* ---------- Utilidades de formato ---------- */
-const fmtTime = ts => new Date(ts).toLocaleTimeString('es-GT', { hour: '2-digit', minute: '2-digit', hour12: false });
-function fmtDur(min) {
-  min = Math.round(min);
-  const h = Math.floor(min / 60), m = min % 60;
-  return h ? `${h} h ${String(m).padStart(2, '0')} min` : `${m} min`;
+/* Rueda de hora */
+function wheelHtml(id) {
+  const col = (name, vals) => `<div class="wcol" data-wc="${name}"><div class="pad"></div>${vals.map(v => `<div data-v="${v}">${pad2(v)}</div>`).join('')}<div class="pad"></div></div>`;
+  return `<div class="wheel" id="${id}">${col('h', range(24))}<span class="wsep">:</span>${col('m', range(12).map(x => x * 5))}</div>`;
 }
-function nightLabel(ts) {
-  const d = new Date(ts - 6 * 3600e3); // una noche que empieza a la 1 am cuenta para el día anterior
-  return d.toLocaleDateString('es-GT', { weekday: 'long', day: 'numeric', month: 'short' });
+function initWheel(id, hhmm, onChange) {
+  const w = $('#' + id); if (!w) return;
+  const cols = $$('.wcol', w);
+  const items = c => $$('[data-v]', c);
+  const mark = c => { const idx = clamp(Math.round(c.scrollTop / 56), 0, items(c).length - 1); items(c).forEach((x, i) => x.classList.toggle('sel', i === idx)); return +items(c)[idx].dataset.v; };
+  const [h, m] = hhmm.split(':').map(Number);
+  const set = (c, v) => { const idx = items(c).findIndex(x => +x.dataset.v === v); c.scrollTop = Math.max(0, idx) * 56; mark(c); };
+  set(cols[0], h); set(cols[1], (Math.round(m / 5) * 5) % 60);
+  let t;
+  cols.forEach(c => c.addEventListener('scroll', () => {
+    mark(c); clearTimeout(t);
+    t = setTimeout(() => { if (N.vibrate) N.vibrate(8); onChange(`${pad2(mark(cols[0]))}:${pad2(mark(cols[1]))}`); }, 140);
+  }, { passive: true }));
 }
-const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
-function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('on'), 2600); }
-function median(a) { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; }
 
 /* ---------- Navegación ---------- */
-let current = 'v-home';
-function show(id) {
-  $$('.view').forEach(v => v.classList.toggle('on', v.id === id));
-  current = id;
-  const tabs = ['v-home', 'v-trends', 'v-settings'];
-  $('#nav').classList.toggle('hide', !tabs.includes(id));
-  $$('#nav button').forEach(b => b.setAttribute('aria-current', b.dataset.tab === id ? 'true' : 'false'));
-  window.scrollTo(0, 0);
-  if (id === 'v-home') renderHome();
-  if (id === 'v-trends') renderTrends();
-  if (id === 'v-settings') renderSettings();
+const ROOTS = ['home', 'diary', 'stats', 'relax', 'settings'];
+const TABS = [['home', 'moon', 'Dormir'], ['diary', 'calendar', 'Diario'], ['stats', 'chart', 'Estadísticas'], ['relax', 'sparkles', 'Relajarse'], ['settings', 'settings', 'Ajustes']];
+let stack = [];
+let current = null;
+let cleanups = [];
+const V = {}; // renderizadores de cada vista
+
+function buildNav() {
+  $('#nav').innerHTML = TABS.map(([v, i, l]) => `<button data-tab="${v}"><span class="pill">${ic(i, 20)}</span>${l}</button>`).join('');
+  $$('#nav button').forEach(b => b.onclick = () => { if (current && current.v === b.dataset.tab) return; go(b.dataset.tab, {}, { reset: true }); });
 }
-$$('#nav button').forEach(b => b.onclick = () => show(b.dataset.tab));
-document.addEventListener('click', e => { if (e.target.closest('[data-back]')) { stopAidPreview(); show('v-home'); } });
+function onCleanup(f) { cleanups.push(f); }
+function go(v, p = {}, opt = {}) {
+  cleanups.forEach(f => { try { f(); } catch (e) {} }); cleanups = [];
+  closeSheet();
+  if (opt.reset) stack = ROOTS.includes(v) ? [] : [{ v: 'home', p: {} }];
+  else if (opt.replace) { /* no se agrega la vista actual */ }
+  else if (current) stack.push(current);
+  current = { v, p };
+  show(v, p, opt);
+}
+const CHROME = { recording: '#000000', sunrise: '#05060F', alarm: '#2A2F5C', breathe: '#1B2538' };
+function show(v, p, opt = {}) {
+  $$('.view').forEach(el => { el.classList.remove('on'); });
+  if (N.setChrome) N.setChrome(CHROME[v] || '#171A33');
+  const el = $('#v-' + v);
+  el.classList.toggle('noanim', !!opt.noanim);
+  el.classList.add('on');
+  el.scrollTop = 0;
+  const root = ROOTS.includes(v);
+  $('#nav').classList.toggle('hide', !root);
+  $$('#nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === v));
+  V[v](el, p);
+}
+function back() {
+  if (sheetOpen) { closeSheet(); return true; }
+  if (!current) return false;
+  if (['recording', 'alarm', 'mission', 'sunrise'].includes(current.v)) { toast('Mantén presionado el botón para terminar'); return true; }
+  if (current.v === 'onboard') return false;
+  if (stack.length) {
+    cleanups.forEach(f => { try { f(); } catch (e) {} }); cleanups = [];
+    current = stack.pop(); show(current.v, current.p); return true;
+  }
+  if (current.v !== 'home') { go('home', {}, { reset: true }); return true; }
+  return false;
+}
+function refresh() { if (current) show(current.v, current.p, { noanim: true }); }
+document.addEventListener('click', e => { const b = e.target.closest('[data-back]'); if (b) back(); });
 
 /* =========================================================
-   MOTOR DE AUDIO
+   INICIO
    ========================================================= */
-let sess = null;                         // noche en curso
-const R = {};                            // recursos de audio
-let E = null;                            // estado del detector
-let M = null;                            // acumulador del minuto
-
-function newDetector() {
-  return { base: null, warm: [], above: 0, below: 0, inEv: false, ev: null, lastCand: null, clips: {}, level: -100 };
-}
-
-async function openMic() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-  const ctx = new (window.AudioContext || window.webkitAudioContext)();
-  if (ctx.state === 'suspended') await ctx.resume();
-  const src = ctx.createMediaStreamSource(stream);
-  const an = ctx.createAnalyser();
-  an.fftSize = 2048; an.smoothingTimeConstant = 0;
-  const mute = ctx.createGain(); mute.gain.value = 0;
-  src.connect(an); an.connect(mute); mute.connect(ctx.destination); // mantiene el grafo activo
-  const hz = ctx.sampleRate / an.fftSize;
-  const bin = f => Math.min(an.frequencyBinCount - 1, Math.round(f / hz));
-  return {
-    stream, ctx, an,
-    td: new Float32Array(an.fftSize), fd: new Float32Array(an.frequencyBinCount),
-    b60: bin(60), b300: bin(300), b500: bin(500), b3k: bin(3000), b8k: bin(8000),
-  };
-}
-
-// Lee un cuadro de audio: nivel en dB y reparto de energía por bandas
-function readFrame(A) {
-  A.an.getFloatTimeDomainData(A.td);
-  let sum = 0;
-  for (let i = 0; i < A.td.length; i++) sum += A.td[i] * A.td[i];
-  const db = 20 * Math.log10(Math.sqrt(sum / A.td.length) + 1e-9);
-  A.an.getFloatFrequencyData(A.fd);
-  let low = 0, voice = 0, tot = 0;
-  for (let i = A.b60; i <= A.b8k; i++) {
-    const p = Math.pow(10, A.fd[i] / 10);
-    tot += p;
-    if (i <= A.b500) low += p;
-    if (i >= A.b300 && i <= A.b3k) voice += p;
+V.home = el => {
+  const list = nights(), last = list[0];
+  const now = new Date(), hr = now.getHours();
+  const greet = hr < 5 ? 'Buenas noches' : hr < 12 ? 'Buenos días' : hr < 19 ? 'Buenas tardes' : 'Buenas noches';
+  const st = streak(list), db = debt(list, S.goal), cafNow = caffeineAt(S.caffeineLog, Date.now());
+  let card;
+  if (last) {
+    const s = last.summary;
+    card = `<button class="card" id="h-last" style="display:block;width:100%;text-align:left;margin-top:26px;background:rgba(16,18,42,.94)">
+      <div class="row" style="gap:16px">${ring(104, s.score, 9)}
+        <div style="flex:1"><p class="mute xs">${Date.now() - (last.end || last.start) < 20 * 3600e3 ? 'Anoche' : esc(nightLabel(last.start))}</p>
+        <p style="font-family:var(--serif);font-size:19px;line-height:1.2">${verdict(s)}</p>
+        <p class="sm" style="margin-top:4px">${s.noSleep ? '' : fmtDur(s.sleepMin)}</p>
+        <p class="mute xs">${s.onsetTs ? fmtTime(s.onsetTs) + ' a ' + fmtTime(s.wakeTs) : ''}</p></div>${ic('chevR', 20, 'style="color:#9A97B8"')}</div>
+      <div style="margin-top:12px" id="h-mini"></div></button>`;
+  } else {
+    card = `<div class="card" style="margin-top:26px;background:rgba(16,18,42,.94);text-align:center;padding:26px 20px">
+      ${ic('moon', 34, 'style="margin:0 auto;color:#E6A85C"')}<h2 style="margin-top:12px">Tu primera noche</h2>
+      <p class="mute sm" style="margin-top:6px">Toca "Ir a dormir" cuando te acuestes. En la mañana verás aquí cómo dormiste.</p></div>`;
   }
-  return { db, lr: tot > 0 ? low / tot : 0, vr: tot > 0 ? voice / tot : 0 };
-}
+  el.innerHTML = `<div class="sky">${stars(42, 330)}${MOON}</div>
+  <div class="rel">
+    <p class="mute sm" style="margin-top:12px">${cap(DIAS[now.getDay()])} ${now.getDate()} de ${MESES[now.getMonth()]}</p>
+    <h1 style="margin-top:4px">${greet.replace(' ', '<br>')}</h1>
+    ${card}
+    <div class="row" style="gap:8px;margin-top:14px;flex-wrap:wrap">
+      ${list.length ? `<span class="chip plain">${ic('flame', 15, 'style="color:#E6A85C"')}${st} ${st === 1 ? 'noche seguida' : 'noches seguidas'}</span>
+      <span class="chip plain">${ic('target', 15, 'style="color:#78B3A6"')}Deuda ${fmtDurShort(db)}</span>` : ''}
+      ${cafNow >= 5 ? `<button class="chip plain" id="h-caf">${ic('coffee', 15, 'style="color:#E6A85C"')}${Math.round(cafNow)} mg de cafeína</button>` : ''}
+      ${S.plan ? `<button class="chip plain" id="h-plan">${ic('flag', 15, 'style="color:#A89BE0"')}Plan: hoy a las ${planTonight() || '—'}</button>` : ''}</div>
+    <button class="btn main" id="h-go" style="margin-top:20px">${ic('moon', 22)}Ir a dormir</button>
+    <button class="row" id="h-alarm" style="justify-content:center;margin:10px auto 0;gap:6px;color:var(--mute);font-size:13px;padding:6px">${ic('alarm', 15)}${S.alarmOn ? `Alarma ${S.win ? 'inteligente ' + fmtClockMin(toMin(S.wake) - S.win) + ' a ' + S.wake : 'a las ' + S.wake}` : 'Sin alarma'}</button>
+    <div class="tools">${[['breathe', 'lungs', 'Respirar', '#78B3A6'], ['relax', 'rain', 'Sonidos', '#A89BE0'], ['nap', 'bed', 'Siesta', '#E6A85C'], ['caffeine', 'coffee', 'Cafeína', '#E6A85C'],
+      ['plan', 'flag', 'Plan', '#A89BE0'], ['badges', 'trophy', 'Logros', '#E6A85C'], ['report', 'report', 'Reporte', '#78B3A6'], ['chrono', 'sunrise', 'Cronotipo', '#A89BE0']]
+      .map(([v, i, l, c]) => `<button class="tool" data-go="${v}"><span class="ibox" style="background:${c}22;color:${c}">${ic(i, 20)}</span><span>${l}</span></button>`).join('')}</div>
+  </div>`;
+  if (last) {
+    $('#h-mini').innerHTML = hypSvg(last, innerWidth - 40 - 38, 58, true);
+    $('#h-last').onclick = () => go('detail', { id: last.id });
+  }
+  $('#h-go').onclick = () => go('prepare');
+  $('#h-alarm').onclick = () => go('prepare');
+  $$('[data-go]', el).forEach(b => b.onclick = () => b.dataset.go === 'relax' ? go('relax', {}, { reset: true }) : go(b.dataset.go, {}));
+  if ($('#h-caf')) $('#h-caf').onclick = () => go('caffeine');
+  if ($('#h-plan')) $('#h-plan').onclick = () => go('plan');
+  animateIn(el);
+};
+const toMin = hhmm => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
 
-// Actualiza el nivel de fondo y detecta eventos. onEvent recibe cada evento clasificado.
-function detect(D, f, now, sensDb, onEvent) {
-  D.level = f.db;
-  if (D.base === null) {
-    D.warm.push(f.db);
-    if (D.warm.length >= 30) D.base = median(D.warm);
+/* =========================================================
+   PREPARAR LA NOCHE
+   ========================================================= */
+let prepTags = null;
+V.prepare = el => {
+  if (!prepTags) prepTags = new Set();
+  const allTags = TAGS.map(t => t[0]).concat(S.customTags || []);
+  const aidTxt = S.aidTypes.length ? `${S.aidTypes.map(t => SOUND_NAME[t]).join(' + ')}, se apaga en ${S.aidMin} min` : 'Ninguno';
+  const alarmName = (ALARM_SOUNDS.find(a => a[0] === S.alarmSound) || ALARM_SOUNDS[0])[1];
+  el.innerHTML = `
+  <div class="top"><button class="iconbtn" data-back>${ic('chevL', 24)}</button><h3>Preparar la noche</h3><span style="width:44px"></span></div>
+  <div class="card" style="text-align:center;padding:14px 18px 18px">
+    <button class="between" id="p-aon" style="width:100%"><span class="row sm" style="gap:8px">${ic('alarm', 18, 'style="color:#E6A85C"')}<b>Despertador inteligente</b></span><span class="sw ${S.alarmOn ? 'on' : ''}"></span></button>
+    <div id="p-aopts" style="transition:opacity .25s;${S.alarmOn ? '' : 'opacity:.35;pointer-events:none'}">
+      <div style="margin:8px 0 6px">${wheelHtml('p-wheel')}</div>
+      <div class="chips" style="justify-content:center">${[[0, 'Exacta'], [10, '10 min'], [20, '20 min'], [30, '30 min'], [45, '45 min']].map(([v, l]) => `<button class="chip ${S.win === v ? 'amb' : ''}" data-win="${v}">${l}</button>`).join('')}</div>
+      <p class="mute xs" style="margin-top:10px" id="p-wintxt"></p>
+    </div>
+  </div>
+  <div class="lst card" style="margin-top:12px;padding:4px 16px">
+    <button class="it" id="p-asound">${ic('music', 20, 'style="color:#A89BE0"')}<div style="flex:1"><b class="sm">Sonido de alarma</b><p class="mute xs">${alarmName}</p></div>${ic('chevR', 18)}</button>
+    <button class="it" id="p-aid">${ic('rain', 20, 'style="color:#A89BE0"')}<div style="flex:1"><b class="sm">Sonido para dormir</b><p class="mute xs">${aidTxt}</p></div>${ic('chevR', 18)}</button>
+    <button class="it" id="p-br">${ic('lungs', 20, 'style="color:#78B3A6"')}<div style="flex:1"><b class="sm">Respirar antes de dormir</b><p class="mute xs">${techName(S.breathTech)}, unos 3 minutos</p></div><span class="sw ${S.breatheBefore ? 'on' : ''}"></span></button>
+  </div>
+  <h3 style="margin:20px 0 10px">Opciones de la noche</h3>
+  <div class="lst card" style="padding:4px 16px">
+    <button class="it" id="p-mat">${ic('bed', 20, 'style="color:#78B3A6"')}<div style="flex:1"><b class="sm">Modo colchón</b><p class="mute xs">Pon el cel sobre el colchón, junto a tu almohada, para medir también tus movimientos.</p></div><span class="sw ${S.mattress ? 'on' : ''}"></span></button>
+    <button class="it" id="p-sun" ${S.alarmOn ? '' : 'style="opacity:.4"'}>${ic('sunrise', 20, 'style="color:#E6A85C"')}<div style="flex:1"><b class="sm">Amanecer en pantalla</b><p class="mute xs">La pantalla se ilumina poco a poco 15 min antes de la alarma.</p></div><span class="sw ${S.sunrise ? 'on' : ''}"></span></button>
+    <button class="it" id="p-mis">${ic('hash', 20, 'style="color:#E6A85C"')}<div style="flex:1"><b class="sm">Misión para apagar la alarma</b><p class="mute xs">${MISSIONS[S.mission] || 'Ninguna'}</p></div>${ic('chevR', 18)}</button>
+    <button class="it" id="p-anti">${ic('snore', 20, 'style="color:#E6A85C"')}<div style="flex:1"><b class="sm">Anti-ronquido</b><p class="mute xs">${ANTI[S.antiSnore] || 'Apagado'}</p></div>${ic('chevR', 18)}</button>
+  </div>
+  <h3 style="margin:20px 0 10px">Notas de hoy</h3>
+  <div class="chips" id="p-tags">${allTags.map(t => `<button class="chip ${prepTags.has(t) ? 'on' : ''}" data-tag="${esc(t)}">${ic(tagIcon(t), 14)}${esc(t)}</button>`).join('')}<button class="chip" id="p-new">${ic('plus', 14)}Nueva</button></div>
+  <div class="hint" style="margin-top:16px">${ic('bulb', 20, 'style="color:#78B3A6"')}<span id="p-bed"></span></div>
+  <button class="btn main" id="p-start" style="margin-top:16px">${ic('moon', 22)}Empezar a dormir</button>`;
+  const upd = () => {
+    const w = toMin(S.wake);
+    $('#p-wintxt').textContent = S.win ? `Te despierta entre ${fmtClockMin(w - S.win)} y ${S.wake}, cuando estés en sueño ligero.` : `Suena exactamente a las ${S.wake}.`;
+    $('#p-bed').innerHTML = S.alarmOn ? `Para dormir ${S.goal} h, acuéstate a las <b>${bedtimeFor(S.wake, S.goal)}</b>.` : `Tu meta es dormir ${S.goal} horas.`;
+  };
+  upd();
+  initWheel('p-wheel', S.wake, v => { S.wake = v; saveS(); upd(); });
+  $('#p-aon').onclick = () => { S.alarmOn = !S.alarmOn; saveS(); $('.sw', $('#p-aon')).classList.toggle('on', S.alarmOn); const o = $('#p-aopts'); o.style.opacity = S.alarmOn ? 1 : .35; o.style.pointerEvents = S.alarmOn ? '' : 'none'; upd(); };
+  $$('[data-win]', el).forEach(b => b.onclick = () => { S.win = +b.dataset.win; saveS(); $$('[data-win]', el).forEach(x => x.classList.toggle('amb', x === b)); upd(); });
+  $('#p-asound').onclick = () => alarmSoundSheet(() => refresh());
+  $('#p-aid').onclick = () => soundPickSheet('aid', () => refresh());
+  $('#p-br').onclick = () => { S.breatheBefore = !S.breatheBefore; saveS(); $('.sw', $('#p-br')).classList.toggle('on', S.breatheBefore); };
+  $('#p-mat').onclick = () => { S.mattress = !S.mattress; saveS(); $('.sw', $('#p-mat')).classList.toggle('on', S.mattress); if (S.mattress) toast('Pon el cel boca abajo sobre el colchón, junto a la almohada'); };
+  $('#p-sun').onclick = () => { if (!S.alarmOn) { toast('Primero activa la alarma'); return; } S.sunrise = !S.sunrise; saveS(); $('.sw', $('#p-sun')).classList.toggle('on', S.sunrise); };
+  $('#p-mis').onclick = () => missionSheet(refresh);
+  $('#p-anti').onclick = () => antiSnoreSheet(refresh);
+  $('#p-tags').addEventListener('click', e => {
+    const c = e.target.closest('[data-tag]'); if (!c) return;
+    const t = c.dataset.tag; if (prepTags.has(t)) prepTags.delete(t); else prepTags.add(t);
+    c.classList.toggle('on', prepTags.has(t));
+  });
+  $('#p-new').onclick = () => openSheet(`<h2>Nueva nota</h2><p class="mute sm" style="margin-bottom:14px">Por ejemplo: té, lectura, meditación.</p>
+    <input id="nt" maxlength="22" placeholder="Nombre de la nota" style="width:100%;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px;outline:none">
+    <button class="btn main" id="nt-ok" style="margin-top:14px">Agregar</button>`, sh => {
+    const inp = $('#nt', sh); setTimeout(() => inp.focus(), 300);
+    $('#nt-ok', sh).onclick = () => {
+      const v = inp.value.trim(); if (!v) return;
+      if (!S.customTags.includes(v) && !TAGS.some(t => t[0] === v)) { S.customTags.push(v); saveS(); }
+      prepTags.add(v); closeSheet(); refresh();
+    };
+  });
+  $('#p-start').onclick = startFlow;
+};
+function techName(t) { return { '478': '4-7-8', caja: 'Respiración en caja', relajante: 'Relajante' }[t] || '4-7-8'; }
+
+function startFlow() {
+  const p = J(N.perms(), {});
+  if (!p.mic) {
+    openSheet(`${ic('mic', 32, 'style="color:#E6A85C"')}<h2 style="margin-top:10px">Necesito el micrófono</h2>
+      <p class="mute" style="margin:6px 0 20px">Con él escucho ronquidos, movimientos y ruidos para calcular tus fases de sueño. Los audios se quedan solo en tu cel.</p>
+      <button class="btn main" id="pm-ok">Permitir micrófono</button>`, sh => { $('#pm-ok', sh).onclick = () => { closeSheet(); N.requestPerm('mic'); }; });
     return;
   }
-  const thr = D.base + sensDb;
-  if (!D.inEv) {
-    if (f.db < D.base) D.base += 0.1 * (f.db - D.base);
-    else if (f.db < thr) D.base += 0.003 * (f.db - D.base);
-  }
-  if (f.db > thr) { D.above++; D.below = 0; } else { D.below++; D.above = 0; }
-  if (!D.inEv && D.above >= 3) { D.inEv = true; D.ev = { start: now - 300, peak: f.db, lr: 0, vr: 0, n: 0 }; }
-  if (D.inEv) {
-    const ev = D.ev;
-    ev.peak = Math.max(ev.peak, f.db); ev.lr += f.lr; ev.vr += f.vr; ev.n++;
-    if (D.below >= 5) finishEvent(D, now - 500, onEvent);
-    else if (now - ev.start > 30000) finishEvent(D, now, onEvent);
-  }
+  if (S.breatheBefore) go('breathe', { then: 'start' });
+  else doStart();
 }
-function finishEvent(D, end, onEvent) {
-  const ev = D.ev; D.inEv = false; D.ev = null;
-  if (!ev || !ev.n) return;
-  const dur = (end - ev.start) / 1000, lr = ev.lr / ev.n, vr = ev.vr / ev.n, rise = ev.peak - D.base;
-  let type;
-  if (dur >= 0.3 && dur <= 4 && lr >= 0.55) {
-    // Los ronquidos se repiten con cada respiración (cada 1.5–10 s)
-    const last = D.lastCand, gap = last ? ev.start - last.t : 0;
-    if (last && gap >= 1500 && gap <= 10000) { type = 'ronquido'; if (last.type === 'posible') last.type = 'ronquido'; }
-    else type = 'posible';
-  } else if (dur >= 0.8 && dur <= 10 && vr >= 0.55 && lr < 0.5) type = 'habla';
-  else if (dur < 0.8 && rise >= 18) type = 'tos';
-  else if (dur < 3) type = 'movimiento';
-  else type = 'ruido';
-  const e = { t: ev.start, d: +dur.toFixed(1), p: +rise.toFixed(1), type };
-  if (type === 'posible' || type === 'ronquido') D.lastCand = e;
-  onEvent(e);
-}
-
-/* ---------- Iniciar noche ---------- */
-async function startNight() {
-  const btn = $('#start');
-  btn.disabled = true;
-  stopAidPreview();
-  try {
-    Object.assign(R, await openMic());
-  } catch (err) {
-    btn.disabled = false;
-    toast('Necesito permiso del micrófono para grabar la noche.');
-    return;
-  }
-  S.alarmOn = $('#a-on').checked; S.wake = $('#a-time').value || S.wake; S.win = +$('#a-win').value;
-  S.aid = $('#aid').value; S.aidMin = +$('#aid-min').value; S.aidVol = +$('#aid-vol').value;
-  S.lastTags = selectedTags();
-  saveSettings();
-
-  const start = Date.now();
-  let wakeTs = null;
-  if (S.alarmOn) {
-    const [h, m] = S.wake.split(':').map(Number);
-    const d = new Date(); d.setHours(h, m, 0, 0);
-    if (d.getTime() <= start + 60000) d.setDate(d.getDate() + 1);
-    wakeTs = d.getTime();
-  }
-  sess = {
-    id: 'n' + start, start, end: null, status: 'recording',
-    minutes: [], events: [], baseline: null, sens: S.sens, goal: S.goal,
-    tags: S.lastTags, alarm: S.alarmOn ? { on: true, wakeTs, win: S.win, set: S.wake } : null,
-    aid: S.aid !== 'ninguno' ? { type: S.aid, min: S.aidMin } : null, mood: null,
+function doStart() {
+  S.lastTags = [...(prepTags || [])]; saveS();
+  const cfg = {
+    alarm: S.alarmOn ? { on: true, wakeTs: wakeTsFrom(S.wake), win: S.win, set: S.wake } : { on: false },
+    aid: S.aidTypes.length ? { types: S.aidTypes.map(t => ({ type: t, vol: S.aidVols[t] ?? .5 })), min: S.aidMin } : null,
+    tags: S.lastTags, sens: S.sens, goal: S.goal,
+    alarmSound: S.alarmSound, vibrate: S.vibrate, ramp: S.ramp, snooze: S.snooze, saveClips: S.saveClips,
+    mattress: S.mattress, antiSnore: S.antiSnore, sunrise: S.alarmOn && S.sunrise, mission: S.mission,
+    caffeine: Math.round(caffeineAt(S.caffeineLog, Date.now())),
   };
-  E = newDetector();
-  M = { t0: start, sum: 0, n: 0, peak: -200 };
-  R.counts = {};
-  R.ringing = false;
-  R.lastSave = 0;
-
-  R.tickIv = setInterval(tick, 100);
-  R.uiIv = setInterval(nightUI, 1000);
-  R.stream.getAudioTracks()[0].addEventListener('ended', () => { $('#nightmsg').textContent = 'El micrófono se desconectó. Mantén presionado para guardar lo grabado.'; });
-  if (sess.aid) startAid(S.aid, S.aidVol, S.aidMin);
-  await lockScreen();
-  try { await document.documentElement.requestFullscreen?.(); } catch (e) {}
-  db.put('nights', sess).catch(() => {});
-  btn.disabled = false;
-  show('v-night');
-  nightUI();
+  const r = N.startNight(JSON.stringify(cfg));
+  if (r === 'ok') { prepTags = null; go('recording', { fresh: Date.now() }, { reset: true }); }
+  else if (r === 'perm') N.requestPerm('mic');
+  else toast('No se pudo empezar la grabación');
 }
 
-function tick() {
-  if (!sess) return;
-  const now = Date.now();
-  const f = readFrame(R);
-  M.sum += f.db; M.n++; if (f.db > M.peak) M.peak = f.db;
-  if (!R.ringing) detect(E, f, now, SENS[sess.sens], onNightEvent);
-  while (now - M.t0 >= 60000) flushMinute();
-}
-function onNightEvent(e) {
-  sess.events.push(e);
-  R.counts[e.type] = (R.counts[e.type] || 0) + 1;
-  maybeClip(e);
-}
-function flushMinute() {
-  const prev = sess.minutes[sess.minutes.length - 1];
-  const a = M.n ? M.sum / M.n : (prev ? prev.a : -60);
-  sess.minutes.push({ a: +a.toFixed(1), p: +(M.n ? M.peak : a).toFixed(1) });
-  M.t0 = sess.start + sess.minutes.length * 60000;
-  M.sum = 0; M.n = 0; M.peak = -200;
-  sess.baseline = E.base !== null ? +E.base.toFixed(1) : null;
-  db.put('nights', sess).catch(() => {});
-}
-
-/* ---------- Clips de audio ---------- */
-const CLIP_RULES = { ronquido: { max: 15, gap: 8 * 60000, len: 10000 }, habla: { max: 10, gap: 2 * 60000, len: 15000 }, tos: { max: 6, gap: 5 * 60000, len: 10000 }, ruido: { max: 6, gap: 10 * 60000, len: 10000 } };
-function maybeClip(e) {
-  if (e.type === 'ruido' && e.p < 20) return;
-  const r = CLIP_RULES[e.type];
-  if (!r || R.recording || !window.MediaRecorder) return;
-  const c = E.clips[e.type] || { n: 0, last: 0 };
-  if (c.n >= r.max || Date.now() - c.last < r.gap) return;
-  c.n++; c.last = Date.now(); E.clips[e.type] = c;
-  const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(m => MediaRecorder.isTypeSupported(m)) || '';
-  let mr;
-  try { mr = new MediaRecorder(R.stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : undefined); } catch (err) { return; }
-  const chunks = [], nightId = sess.id;
-  R.recording = true; R.mr = mr;
-  mr.ondataavailable = ev => { if (ev.data && ev.data.size) chunks.push(ev.data); };
-  mr.onstop = () => {
-    R.recording = false;
-    if (!chunks.length) return;
-    const blob = new Blob(chunks, { type: mr.mimeType || mime || 'audio/webm' });
-    db.put('clips', { id: 'c' + Date.now() + Math.random().toString(36).slice(2, 6), nightId, t: e.t, kind: e.type, blob }).catch(() => {});
+/* =========================================================
+   GRABANDO
+   ========================================================= */
+let sunriseSeen = false;
+V.recording = (el, p) => {
+  el.innerHTML = `
+  <div class="rec-top"><span class="recdot"></span><span id="r-status">Grabando tu sueño</span></div>
+  <div id="rec-clock"><div class="t count" id="r-clock">--:--</div>
+    <button class="row" id="r-alarm" style="justify-content:center;gap:6px;color:#3E3A60;font-size:14px;margin:12px auto 0;padding:6px 10px">${ic('alarm', 15)}<span></span></button>
+    <canvas id="rec-wave" width="480" height="80"></canvas>
+    <div class="rec-meta"><span id="r-aid"></span><span>${ic('snore', 15)}<b id="r-snore" class="count">0</b>&nbsp;ronquidos</span></div>
+    <div class="rec-meta" id="r-extra"></div>
+  </div>
+  <p class="rec-note" id="r-note">Puedes bloquear el cel y apagar la pantalla. Sigo grabando.</p>
+  <button id="hold" aria-label="Mantén presionado para terminar la noche">
+    <svg class="r" width="104" height="104"><circle cx="52" cy="52" r="48" fill="none" stroke="#1E1C33" stroke-width="3"/>
+      <circle id="hold-ring" cx="52" cy="52" r="48" fill="none" stroke="#8A7FC8" stroke-width="3" stroke-linecap="round" stroke-dasharray="301.6" stroke-dashoffset="301.6" transform="rotate(-90 52 52)"/></svg>
+    <span class="lbl">${ic('sun', 20, 'style="margin:0 auto 4px"')}Mantén para<br>despertar</span></button>`;
+  const cv = $('#rec-wave'), g = cv.getContext('2d');
+  let lv = null, missing = 0;
+  const draw = w => {
+    g.clearRect(0, 0, 480, 80);
+    const n = 60, bw = 480 / n;
+    for (let i = 0; i < n; i++) {
+      const v = w[w.length - n + i] ?? 0, hh = Math.max(4, v * 70);
+      g.fillStyle = '#2E2B4A'; g.fillRect(i * bw + 1.5, 40 - hh / 2, bw - 3, hh);
+    }
   };
-  mr.start();
-  setTimeout(() => { if (mr.state !== 'inactive') mr.stop(); }, r.len);
-}
-
-/* ---------- Pantalla de la noche ---------- */
-function nightUI() {
-  if (!sess) return;
-  const now = Date.now();
-  $('#ck').textContent = fmtTime(now);
-  const a = sess.alarm;
-  let sub = '';
-  if (a && a.on) {
-    const from = a.wakeTs - a.win * 60000;
-    sub = a.win ? `Alarma entre ${fmtTime(from)} y ${fmtTime(a.wakeTs)}` : `Alarma a las ${fmtTime(a.wakeTs)}`;
-  } else sub = 'Sin alarma';
-  if (R.aid && R.aid.endAt > now) sub += `. Sonido ${Math.ceil((R.aid.endAt - now) / 60000)} min`;
-  $('#ck-s').textContent = sub;
-  // indicador de nivel discreto
-  const lv = E.base === null ? 0 : clamp((E.level - E.base) / 25);
-  $('#level').style.background = E.inEv ? '#7A6A3E' : `rgb(${52 + lv * 60},${49 + lv * 50},${79 + lv * 50})`;
-  // mover el reloj cada minuto para no marcar la pantalla
-  if (now - (R.lastMove || 0) > 60000) {
-    R.lastMove = now;
-    const c = $('#clock');
-    c.style.left = (40 + Math.random() * 20) + '%';
-    c.style.top = (28 + Math.random() * 20) + '%';
-  }
-  alarmCheck(now);
-}
-
-/* ---------- Mantener pantalla encendida ---------- */
-async function lockScreen() {
-  try { if ('wakeLock' in navigator) R.wl = await navigator.wakeLock.request('screen'); } catch (e) {}
-}
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && sess) {
-    lockScreen();
-    if (R.ctx && R.ctx.state === 'suspended') R.ctx.resume();
-  }
-});
-
-/* ---------- Mantener presionado para terminar ---------- */
-(() => {
-  const hold = $('#hold'), ring = $('#hold-ring'), LEN = 276.5, MS = 1500;
+  const tick = () => {
+    const now = new Date();
+    $('#r-clock').textContent = fmtTime(now);
+    lv = J(N.live(), {});
+    if (lv.ringing) { go('alarm', {}, { replace: true }); return; }
+    if (lv.sunrise && !sunriseSeen) { sunriseSeen = true; go('sunrise', {}, { replace: true }); return; }
+    if (!lv.recording) {
+      missing++;
+      if (missing > 3) { $('#r-status').textContent = 'La grabación se detuvo'; $('#r-note').textContent = 'Mantén presionado el botón para ver lo que se grabó.'; }
+      return;
+    }
+    missing = 0;
+    if (lv.micError) { $('#r-status').textContent = 'Revisa el micrófono'; $('#r-note').textContent = 'Otra app puede estar usando el micrófono.'; }
+    const a = lv.alarm || {};
+    $('#r-alarm span').textContent = a.on && a.wakeTs ? (a.win ? `${fmtTime(a.wakeTs - a.win * 60000)} a ${fmtTime(a.wakeTs)}` : `Alarma ${fmtTime(a.wakeTs)}`) : 'Sin alarma';
+    $('#r-snore').textContent = (lv.counts || {}).ronquido || 0;
+    const so = lv.sounds || {};
+    $('#r-aid').innerHTML = so.playing && so.layers && so.layers.length ? `${ic('rain', 15)}${SOUND_NAME[so.layers[0].type] || 'Sonido'} ${Math.ceil((so.left || 0) / 60000)} min` : '';
+    draw(lv.wave || []);
+    const ex = [];
+    if (lv.nap) ex.push(`${ic('bed', 15)}Siesta`);
+    if (lv.mattress) ex.push(`<i class="recdot" style="background:${lv.moving ? '#6E6A9E' : '#2E2B4A'};animation:none"></i>Modo colchón`);
+    if (lv.nudges) ex.push(`${ic('snore', 15)}${lv.nudges} ${lv.nudges === 1 ? 'aviso' : 'avisos'}`);
+    $('#r-extra').innerHTML = ex.map(x => `<span>${x}</span>`).join('');
+  };
+  tick();
+  const iv = setInterval(tick, 1000);
+  const mv = setInterval(() => { const c = $('#rec-clock'); if (c) { c.style.left = (42 + Math.random() * 16) + '%'; c.style.top = (34 + Math.random() * 16) + '%'; } }, 60000);
+  onCleanup(() => { clearInterval(iv); clearInterval(mv); });
+  $('#r-alarm').onclick = editAlarmSheet;
+  // Mantener presionado
+  const hold = $('#hold'), rg = $('#hold-ring'), LEN = 301.6, MS = 1400;
   let t0 = 0, raf = 0;
-  const step = () => {
-    const p = clamp((Date.now() - t0) / MS);
-    ring.style.strokeDashoffset = LEN * (1 - p);
-    if (p >= 1) { reset(); finishNight(); return; }
-    raf = requestAnimationFrame(step);
-  };
-  const reset = () => { cancelAnimationFrame(raf); t0 = 0; ring.style.strokeDashoffset = LEN; };
-  hold.addEventListener('pointerdown', e => { e.preventDefault(); t0 = Date.now(); raf = requestAnimationFrame(step); });
+  const reset = () => { cancelAnimationFrame(raf); t0 = 0; rg.style.strokeDashoffset = LEN; };
+  const step = () => { const pr = clamp((Date.now() - t0) / MS); rg.style.strokeDashoffset = LEN * (1 - pr); if (pr >= 1) { reset(); N.vibrate(60); stopFlow(); return; } raf = requestAnimationFrame(step); };
+  hold.addEventListener('pointerdown', e => { e.preventDefault(); t0 = Date.now(); N.vibrate(15); raf = requestAnimationFrame(step); });
   ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => hold.addEventListener(ev, () => { if (t0) reset(); }));
-  hold.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); finishNight(); } });
-})();
-
-/* =========================================================
-   DESPERTADOR INTELIGENTE
-   ========================================================= */
-function alarmCheck(now) {
-  const a = sess && sess.alarm;
-  if (!a || !a.on || R.ringing) return;
-  if (now >= a.wakeTs) return ring('Es tu hora');
-  if (a.win && now >= a.wakeTs - a.win * 60000) {
-    // sueño ligero = movimientos recientes
-    let act = 0;
-    for (let i = sess.events.length - 1; i >= 0; i--) {
-      const e = sess.events[i];
-      if (e.t < now - 3 * 60000) break;
-      if (e.type !== 'ronquido' && e.type !== 'posible') act++;
-    }
-    if (act >= 2) ring('Estabas en sueño ligero');
-  }
-}
-function ring(why) {
-  R.ringing = true;
-  sess.alarm.rangAt = sess.alarm.rangAt || Date.now();
-  stopAid(true);
-  $('#al-why').textContent = why;
-  $('#al-time').textContent = fmtTime(Date.now());
-  show('v-alarm');
-  const ctx = R.ctx;
-  if (ctx.state === 'suspended') ctx.resume();
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(0.02, ctx.currentTime);
-  g.gain.exponentialRampToValueAtTime(0.9, ctx.currentTime + 90);
-  g.connect(ctx.destination);
-  R.alarmGain = g;
-  const notes = [523.25, 659.25, 783.99, 987.77, 1046.5];
-  const play = () => {
-    const t0 = ctx.currentTime;
-    notes.forEach((fq, i) => {
-      const o = ctx.createOscillator(), e = ctx.createGain();
-      const t = t0 + i * 0.32;
-      o.type = 'sine'; o.frequency.value = fq;
-      e.gain.setValueAtTime(0, t);
-      e.gain.linearRampToValueAtTime(0.45, t + 0.03);
-      e.gain.exponentialRampToValueAtTime(0.001, t + 1.4);
-      o.connect(e); e.connect(g); o.start(t); o.stop(t + 1.5);
-    });
-  };
-  play();
-  R.alarmIv = setInterval(play, 3600);
-  if (navigator.vibrate) { navigator.vibrate([500, 300, 500]); R.vibIv = setInterval(() => navigator.vibrate([500, 300, 500]), 4000); }
-}
-function silenceAlarm() {
-  clearInterval(R.alarmIv); clearInterval(R.vibIv);
-  if (navigator.vibrate) navigator.vibrate(0);
-  if (R.alarmGain) { try { R.alarmGain.gain.cancelScheduledValues(0); R.alarmGain.gain.value = 0; R.alarmGain.disconnect(); } catch (e) {} R.alarmGain = null; }
-}
-$('#al-stop').onclick = () => finishNight();
-$('#al-snooze').onclick = () => {
-  silenceAlarm();
-  R.ringing = false;
-  sess.alarm.wakeTs = Date.now() + 9 * 60000;
-  sess.alarm.win = 0;
-  sess.alarm.snoozes = (sess.alarm.snoozes || 0) + 1;
-  show('v-night');
-  nightUI();
+  if (p.ask === 'stop') confirmSheet('¿Terminar la noche?', 'Se guarda lo grabado y ves tu resultado.', 'Terminar', false, stopFlow);
+  if (p.ask === 'alarm') setTimeout(editAlarmSheet, 300);
 };
-
-/* =========================================================
-   SONIDOS PARA DORMIR
-   ========================================================= */
-function noiseBuffer(ctx, kind) {
-  const len = ctx.sampleRate * 6, buf = ctx.createBuffer(2, len, ctx.sampleRate);
-  for (let ch = 0; ch < 2; ch++) {
-    const d = buf.getChannelData(ch);
-    let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0, last = 0;
-    for (let i = 0; i < len; i++) {
-      const w = Math.random() * 2 - 1;
-      if (kind === 'blanco') d[i] = w * 0.25;
-      else if (kind === 'rosa' || kind === 'lluvia') {
-        b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759; b2 = 0.969 * b2 + w * 0.153852;
-        b3 = 0.8665 * b3 + w * 0.3104856; b4 = 0.55 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.016898;
-        d[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362) * 0.06; b6 = w * 0.115926;
-        if (kind === 'lluvia' && Math.random() < 0.0006) d[i] += (Math.random() * 2 - 1) * 0.5; // gotas
-      } else { last = (last + 0.02 * w) / 1.02; d[i] = last * 3.2; } // café y olas
-    }
-  }
-  return buf;
-}
-function buildAid(ctx, kind, vol) {
-  const src = ctx.createBufferSource();
-  src.buffer = noiseBuffer(ctx, kind); src.loop = true;
-  const out = ctx.createGain(); out.gain.value = vol;
-  let node = src;
-  if (kind === 'lluvia') { const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 400; node.connect(hp); node = hp; }
-  if (kind === 'olas') {
-    const lfo = ctx.createOscillator(), depth = ctx.createGain(), swell = ctx.createGain();
-    lfo.frequency.value = 0.09; depth.gain.value = 0.45; swell.gain.value = 0.55;
-    lfo.connect(depth); depth.connect(swell.gain); lfo.start();
-    node.connect(swell); node = swell;
-  }
-  node.connect(out); out.connect(ctx.destination);
-  src.start();
-  return { src, out };
-}
-function startAid(kind, vol, min) {
-  const ctx = R.ctx;
-  const a = buildAid(ctx, kind, vol);
-  const end = ctx.currentTime + min * 60;
-  a.out.gain.setValueAtTime(vol, Math.max(ctx.currentTime, end - 120));
-  a.out.gain.linearRampToValueAtTime(0.0001, end);
-  a.src.stop(end + 1);
-  R.aid = { ...a, endAt: Date.now() + min * 60000 };
-}
-function stopAid(fast) {
-  if (!R.aid) return;
-  try { R.aid.out.gain.cancelScheduledValues(0); R.aid.out.gain.value = 0; R.aid.src.stop(); } catch (e) {}
-  R.aid = null;
-}
-let preview = null;
-function stopAidPreview() {
-  if (!preview) return;
-  try { preview.a.src.stop(); preview.ctx.close(); } catch (e) {}
-  preview = null;
-  $('#aid-try').textContent = 'Escuchar';
-}
-$('#aid-try').onclick = () => {
-  if (preview) return stopAidPreview();
-  const kind = $('#aid').value;
-  if (kind === 'ninguno') return toast('Elige un sonido primero.');
-  const ctx = new (window.AudioContext || window.webkitAudioContext)();
-  preview = { ctx, a: buildAid(ctx, kind, +$('#aid-vol').value) };
-  $('#aid-try').textContent = 'Detener';
-};
-$('#aid-vol').oninput = e => { if (preview) preview.a.out.gain.value = +e.target.value; };
-$('#aid').onchange = () => { if (preview) { stopAidPreview(); $('#aid-try').click(); } };
-
-/* =========================================================
-   TERMINAR NOCHE
-   ========================================================= */
-let finishing = false;
-async function finishNight() {
-  if (!sess || finishing) return;
-  finishing = true;
-  clearInterval(R.tickIv); clearInterval(R.uiIv);
-  silenceAlarm(); stopAid(true);
-  if (E.inEv) finishEvent(E, Date.now(), onNightEvent);
-  if (M.n >= 100) flushMinute();
-  if (R.mr && R.mr.state !== 'inactive') { try { R.mr.stop(); } catch (e) {} }
-  await new Promise(r => setTimeout(r, 400));
-  try { R.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
-  try { await R.ctx.close(); } catch (e) {}
-  try { await R.wl?.release(); } catch (e) {}
-  try { if (document.fullscreenElement) await document.exitFullscreen(); } catch (e) {}
-  sess.end = Date.now();
-  sess.status = 'done';
-  sess.summary = analyze(sess);
-  await db.put('nights', sess);
-  const id = sess.id;
-  sess = null; R.ringing = false; finishing = false;
-  moodFor = id;
-  show('v-mood');
-}
-
-/* ---------- Ánimo al despertar ---------- */
-let moodFor = null;
-$$('#v-mood [data-m]').forEach(b => b.onclick = async () => {
-  const n = await db.get('nights', moodFor);
-  const m = +b.dataset.m;
-  if (n && m) { n.mood = m; n.summary = analyze(n); await db.put('nights', n); }
-  openDetail(moodFor);
-});
-
-/* =========================================================
-   ANÁLISIS DE LA NOCHE
-   ========================================================= */
-function analyze(n) {
-  const Mn = n.minutes.length;
-  const counts = { ronquido: 0, habla: 0, tos: 0, movimiento: 0, ruido: 0 };
-  if (!Mn) return { empty: true, counts, score: 0, inBed: 0, sleepMin: 0 };
-  const act = new Array(Mn).fill(0), sn = new Array(Mn).fill(0);
-  for (const e of n.events) {
-    const i = Math.floor((e.t - n.start) / 60000);
-    const ty = e.type === 'posible' ? 'movimiento' : e.type;
-    counts[ty]++;
-    if (i < 0 || i >= Mn) continue;
-    if (ty === 'ronquido') sn[i]++;
-    else act[i] += ty === 'movimiento' ? 1 : 1.5;
-  }
-  const restless = act.map(a => a >= 2);
-
-  // Hora en que te dormiste: 15 min seguidos tranquilos, o el primer ronquido sostenido
-  let quiet = -1;
-  for (let i = 0; i + 15 <= Mn; i++) {
-    let ok = true;
-    for (let j = i; j < i + 15; j++) if (restless[j]) { ok = false; break; }
-    if (ok) { quiet = i; break; }
-  }
-  if (quiet < 0 && Mn < 15 && !restless.some(Boolean)) quiet = 0;
-  const firstSnore = sn.findIndex(x => x >= 2);
-  const cands = [quiet, firstSnore].filter(x => x >= 0);
-  const onset = cands.length ? Math.min(...cands) : -1;
-
-  const goal = n.goal || S.goal;
-  if (onset < 0) {
-    return { empty: false, noSleep: true, counts, inBed: Mn, sleepMin: 0, score: 0, onsetTs: null, wakeTs: n.start + Mn * 60000, depth: new Array(Mn).fill(0), snoreIdx: [], latency: Mn, awakenings: 0, eff: 0, deepMin: 0, lightMin: 0, snoreMin: 0, snorePct: 0, goal };
-  }
-  let wake = Mn;
-  while (wake - 1 > onset && restless[wake - 1]) wake--;
-
-  let awakeMin = 0, awakenings = 0, run = 0;
-  for (let i = onset; i < wake; i++) {
-    if (restless[i]) run++;
-    else { if (run >= 3) { awakenings++; awakeMin += run; } run = 0; }
-  }
-  if (run >= 3) { awakenings++; awakeMin += run; }
-
-  // Curva de profundidad: movimiento observado + ciclo típico de ~90 min
-  const sm = act.map((_, i) => { let s = 0, c = 0; for (let j = Math.max(0, i - 2); j <= Math.min(Mn - 1, i + 2); j++) { s += act[j]; c++; } return s / c; });
-  const depth = sm.map((v, i) => {
-    if (i < onset || i >= wake) return 0;
-    const t = i - onset;
-    const data = 1 - clamp(v / 1.5);
-    const cyc = 0.5 + 0.5 * Math.cos(2 * Math.PI * (t - 35) / 90);
-    const prior = cyc * Math.max(0.35, 1 - t / 600);
-    let d = (0.2 + 0.8 * prior) * (0.35 + 0.65 * data);
-    if (restless[i]) d = Math.min(d, 0.1);
-    return +d.toFixed(2);
+function editAlarmSheet() {
+  const lv = J(N.live(), {}); const a = lv.alarm || {};
+  let on = !!a.on, win = a.win ?? S.win, wake = a.set || S.wake;
+  openSheet(`<div class="between"><h2>Alarma de esta noche</h2><button id="ea-on" class="sw ${on ? 'on' : ''}"></button></div>
+    <div style="margin:8px 0">${wheelHtml('ea-wheel')}</div>
+    <div class="chips" style="justify-content:center">${[[0, 'Exacta'], [10, '10 min'], [20, '20 min'], [30, '30 min'], [45, '45 min']].map(([v, l]) => `<button class="chip ${win === v ? 'amb' : ''}" data-ew="${v}">${l}</button>`).join('')}</div>
+    <button class="btn main" id="ea-ok" style="margin-top:18px">Guardar</button>`, sh => {
+    initWheel('ea-wheel', wake, v => { wake = v; });
+    $('#ea-on', sh).onclick = e => { on = !on; e.currentTarget.classList.toggle('on', on); };
+    $$('[data-ew]', sh).forEach(b => b.onclick = () => { win = +b.dataset.ew; $$('[data-ew]', sh).forEach(x => x.classList.toggle('amb', x === b)); });
+    $('#ea-ok', sh).onclick = () => {
+      N.setAlarm(JSON.stringify({ on, wakeTs: wakeTsFrom(wake), win, set: wake }));
+      closeSheet(); toast(on ? `Alarma cambiada a las ${wake}` : 'Alarma apagada');
+    };
   });
-  let deepMin = 0, lightMin = 0, snoreMin = 0;
-  const snoreIdx = [];
-  for (let i = onset; i < wake; i++) {
-    if (depth[i] >= 0.6) deepMin++; else if (depth[i] >= 0.15) lightMin++;
-    if (sn[i] > 0) { snoreMin++; snoreIdx.push(i); }
-  }
-  const sleepMin = Math.max(0, wake - onset - awakeMin);
-  const inBed = Mn;
-  const eff = inBed ? sleepMin / inBed : 0;
-  const h = sleepMin / 60;
-  const snorePct = sleepMin ? snoreMin / sleepMin : 0;
-
-  const pDur = 35 * clamp(1 - Math.max(0, (goal - 0.5) - h, h - (goal + 1.5)) / 3);
-  const pEff = 25 * clamp((eff - 0.65) / 0.27);
-  const pLat = 10 * clamp(1 - (onset - 20) / 40);
-  const pAwk = 10 * clamp(1 - awakenings / 4);
-  const pSn = 10 * clamp(1 - snorePct / 0.35);
-  const pDeep = 10 * clamp(sleepMin ? (deepMin / sleepMin) / 0.25 : 0);
-  const score = Math.round(pDur + pEff + pLat + pAwk + pSn + pDeep);
-
-  return {
-    counts, inBed, sleepMin, score, eff, latency: onset, awakenings, awakeMin, deepMin, lightMin, snoreMin, snorePct, goal,
-    onsetTs: n.start + onset * 60000, wakeTs: n.start + wake * 60000, depth, snoreIdx,
-    restlessIdx: restless.map((r, i) => r ? i : -1).filter(i => i >= 0),
-  };
 }
-function verdict(s) {
-  if (s.noSleep) return 'No se detectó sueño';
-  if (s.score >= 80) return 'Dormiste muy bien';
-  if (s.score >= 65) return 'Buena noche';
-  if (s.score >= 50) return 'Noche regular';
-  return 'Noche difícil';
+function stopFlow() {
+  const id = N.stopNight();
+  N.setBrightness(-1); sunriseSeen = false;
+  if (id) {
+    const n = finalize(id);
+    if (n && (n.minutes || []).length < 3) toast('Fue una grabación muy corta');
+    afterNight(n);
+    if (n && n.nap) go('detail', { id }, { reset: true });
+    else go('mood', { id }, { reset: true });
+  } else go('home', {}, { reset: true });
 }
-
-/* ---------- Consejos ---------- */
-function tipsFor(n, history) {
-  const s = n.summary, t = [], tags = n.tags || [];
-  if (s.noSleep) return [{ h: 'No hubo suficiente silencio para detectar sueño', b: 'Revisa que el cel esté cerca y prueba bajar la sensibilidad en Ajustes si tu cuarto tiene ruido constante.' }];
-  const h = s.sleepMin / 60, goal = s.goal || S.goal;
-  if (h < goal - 0.75) {
-    const wakeClock = new Date(s.wakeTs);
-    const bed = new Date(wakeClock.getTime() - (goal * 60 + 15) * 60000);
-    t.push({ h: `Te faltaron ${fmtDur((goal - h) * 60)} para tu meta`, b: `Si te levantas a la misma hora, intenta acostarte cerca de las ${fmtTime(bed)}. Contamos 15 min para quedarte dormido.` });
-  }
-  if (s.latency > 30) t.push({ h: `Tardaste ${fmtDur(s.latency)} en dormirte`, b: 'Deja el celular y las pantallas 30–60 min antes, baja las luces y si no te duermes en 20 min, levántate un rato y vuelve con sueño.' + (tags.includes('Café') ? ' Anotaste café: su efecto dura 6–8 horas.' : '') });
-  if (s.snorePct > 0.15) t.push({ h: `Roncaste ${Math.round(s.snorePct * 100)}% de la noche`, b: 'Dormir de lado suele reducirlo; también ayuda evitar alcohol y cenas pesadas antes de dormir y mantener la nariz despejada.' + (tags.includes('Alcohol') ? ' Anotaste alcohol, que relaja la garganta y aumenta los ronquidos.' : '') });
-  if (s.snorePct > 0.3 && history.filter(x => x.summary && x.summary.snorePct > 0.3).length >= 4) t.push({ h: 'Ronquidos fuertes varias noches', b: 'Si además te despiertas cansado o con dolor de cabeza, vale la pena comentarlo con un médico; a veces es apnea del sueño.' });
-  if (s.awakenings >= 3 || (s.eff < 0.8 && s.inBed > 120)) t.push({ h: `Te despertaste ${s.awakenings} ${s.awakenings === 1 ? 'vez' : 'veces'}`, b: 'Un cuarto fresco (18–21 °C), oscuro y sin ruido ayuda a no interrumpir el sueño. Evita líquidos en la última hora.' + (tags.includes('Cuarto caliente') ? ' Anotaste que el cuarto estaba caliente.' : '') });
-  if (s.counts.ruido >= 8) t.push({ h: 'Hubo bastante ruido', b: 'Prueba un sonido para dormir (ruido café o lluvia) o tapones para tapar los ruidos de afuera.' });
-  if (s.counts.habla >= 2) t.push({ h: 'Hablaste dormido', b: 'Es común y casi siempre inofensivo; aumenta con estrés y falta de sueño. Escucha los audios abajo.' });
-  if (s.counts.tos >= 6) t.push({ h: 'Tosiste varias veces', b: 'Si se repite varias noches, revisa alergias, polvo o aire seco en el cuarto.' });
-  const recent = history.filter(x => x.summary && x.summary.onsetTs).slice(0, 7);
-  if (recent.length >= 4) {
-    const sd = clockStd(recent.map(x => x.summary.onsetTs));
-    if (sd > 60) t.push({ h: 'Tu hora de dormir varía mucho', b: `Esta semana cambió ±${Math.round(sd)} min. Acostarte y levantarte a la misma hora, también el fin de semana, mejora la calidad.` });
-  }
-  if (s.deepMin && s.sleepMin && s.deepMin / s.sleepMin < 0.15 && s.sleepMin > 240) t.push({ h: 'Poco sueño profundo estimado', b: 'El ejercicio durante el día y no tomar alcohol en la noche suelen aumentar el sueño profundo.' });
-  if (!t.length) t.push({ h: 'Buen trabajo', b: 'Duración, continuidad y tiempo para dormirte estuvieron bien. Mantén el mismo horario.' });
-  return t;
-}
-function clockMin(ts) { const d = new Date(ts); let m = d.getHours() * 60 + d.getMinutes(); if (m < 12 * 60) m += 1440; return m; } // relativo al mediodía
-function clockStd(arr) { const v = arr.map(clockMin); const mean = v.reduce((a, b) => a + b, 0) / v.length; return Math.sqrt(v.reduce((a, b) => a + (b - mean) ** 2, 0) / v.length); }
-function fmtClockMin(m) { m = Math.round(m) % 1440; return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; }
 
 /* =========================================================
-   GRÁFICAS
+   ALARMA
    ========================================================= */
-function setupCanvas(cv, h) {
-  const dpr = window.devicePixelRatio || 1;
-  const w = cv.clientWidth || cv.parentElement.clientWidth;
-  cv.width = w * dpr; cv.height = h * dpr; cv.style.height = h + 'px';
-  const g = cv.getContext('2d'); g.scale(dpr, dpr);
-  return { g, w, h };
-}
-function drawNight(cv, n, compact) {
-  const s = n.summary, depth = s.depth || [], Mn = depth.length;
-  const H = compact ? 90 : 210;
-  const { g, w, h } = setupCanvas(cv, H);
-  const padL = compact ? 0 : 64, padB = compact ? 4 : 24, snoreH = compact ? 0 : 12;
-  const top = 6, bottom = h - padB - snoreH - 4, cw = w - padL - 4;
-  const css = getComputedStyle(document.documentElement);
-  const col = k => css.getPropertyValue(k).trim();
-  if (!compact) {
-    g.font = '12px ' + col('--sans'); g.fillStyle = col('--mute'); g.textBaseline = 'middle';
-    [['Despierto', 0.06], ['Ligero', 0.38], ['Profundo', 0.82]].forEach(([l, y]) => g.fillText(l, 0, top + y * (bottom - top)));
-    g.strokeStyle = 'rgba(154,151,184,.14)'; g.lineWidth = 1;
-    [0.15, 0.6].forEach(y => { const yy = Math.round(top + y * (bottom - top)) + .5; g.beginPath(); g.moveTo(padL, yy); g.lineTo(w, yy); g.stroke(); });
-  }
-  if (!Mn) return;
-  const X = i => padL + (Mn === 1 ? cw / 2 : (i / (Mn - 1)) * cw);
-  const Y = d => top + d * (bottom - top);
-  // área
-  const grad = g.createLinearGradient(0, top, 0, bottom);
-  grad.addColorStop(0, 'rgba(168,155,224,.05)'); grad.addColorStop(1, 'rgba(120,179,166,.55)');
-  g.beginPath(); g.moveTo(X(0), top);
-  for (let i = 0; i < Mn; i++) {
-    if (i === 0) g.lineTo(X(0), Y(depth[0]));
-    else { const xm = (X(i - 1) + X(i)) / 2; g.bezierCurveTo(xm, Y(depth[i - 1]), xm, Y(depth[i]), X(i), Y(depth[i])); }
-  }
-  g.lineTo(X(Mn - 1), top); g.closePath(); g.fillStyle = grad; g.fill();
-  // línea
-  g.beginPath();
-  for (let i = 0; i < Mn; i++) {
-    if (i === 0) g.moveTo(X(0), Y(depth[0]));
-    else { const xm = (X(i - 1) + X(i)) / 2; g.bezierCurveTo(xm, Y(depth[i - 1]), xm, Y(depth[i]), X(i), Y(depth[i])); }
-  }
-  g.strokeStyle = col('--teal'); g.lineWidth = compact ? 1.5 : 2; g.stroke();
-  if (compact) return;
-  // ronquidos
-  g.fillStyle = col('--amber');
-  const bw = Math.max(1.5, cw / Mn);
-  (s.snoreIdx || []).forEach(i => g.fillRect(X(i) - bw / 2, bottom + 6, bw, snoreH - 2));
-  // horas
-  g.fillStyle = col('--mute'); g.font = '11px ' + col('--sans'); g.textBaseline = 'alphabetic'; g.textAlign = 'center';
-  const first = new Date(n.start); first.setMinutes(0, 0, 0); first.setHours(first.getHours() + 1);
-  const step = Mn > 600 ? 2 : 1;
-  for (let t = first.getTime(); t < n.start + Mn * 60000; t += step * 3600e3) {
-    const i = (t - n.start) / 60000;
-    g.fillText(new Date(t).getHours() + 'h', X(i), h - 4);
-  }
-  g.textAlign = 'start';
+V.alarm = el => {
+  const lv0 = J(N.live(), {});
+  N.setBrightness(1);
+  el.innerHTML = `<div class="sun"></div>
+  <div style="position:relative;z-index:2;text-align:center;margin-top:calc(110px + var(--st))">
+    <p style="font-size:16px">Buenos días</p>
+    <div class="count" style="font-family:var(--serif);font-weight:300;font-size:96px;line-height:1" id="al-t">${fmtTime(Date.now())}</div>
+    <p class="row" style="justify-content:center;gap:6px;margin-top:10px;color:#F1E3D0">${ic('sparkles', 16)}<span>${esc(lv0.ringWhy || 'Es tu hora')}</span></p>
+  </div>
+  <div class="slide" id="al-slide"><div class="knob" id="al-knob">${ic('sun', 26)}</div><span class="txt">Desliza para despertar ${ic('chevR', 16, 'style="display:inline;vertical-align:-3px"')}</span></div>
+  <button class="btn" id="al-snooze" style="position:absolute;z-index:3;left:24px;right:24px;bottom:calc(66px + var(--sb));background:rgba(23,26,51,.3)">${ic('clock', 18)}Posponer ${S.snooze} min</button>`;
+  const iv = setInterval(() => {
+    $('#al-t').textContent = fmtTime(Date.now());
+    const lv = J(N.live(), {});
+    if (!lv.ringing && lv.recording) go('recording', {}, { replace: true });
+  }, 1000);
+  onCleanup(() => clearInterval(iv));
+  const slide = $('#al-slide'), knob = $('#al-knob');
+  let sx = null, max = 0;
+  slide.addEventListener('pointerdown', e => { sx = e.clientX; max = slide.clientWidth - 70; knob.style.transition = 'none'; slide.setPointerCapture(e.pointerId); });
+  slide.addEventListener('pointermove', e => { if (sx === null) return; const dx = clamp(e.clientX - sx, 0, max); knob.style.transform = `translateX(${dx}px)`; });
+  const end = e => {
+    if (sx === null) return;
+    const dx = clamp(e.clientX - sx, 0, max); sx = null; knob.style.transition = '';
+    if (dx > max * .8) { knob.style.transform = `translateX(${max}px)`; N.vibrate(40); if (S.mission && S.mission !== 'ninguna') go('mission', {}, { replace: true }); else wakeUp(); }
+    else knob.style.transform = '';
+  };
+  slide.addEventListener('pointerup', end); slide.addEventListener('pointercancel', end);
+  $('#al-snooze').onclick = () => { N.snooze(); toast(`Te despierto en ${S.snooze} minutos`); go('recording', {}, { replace: true }); };
+};
+function wakeUp() {
+  const id = N.stopNight();
+  N.setBrightness(-1); N.shakeStop(); sunriseSeen = false;
+  if (id) { const n = finalize(id); afterNight(n); go(n && n.nap ? 'detail' : 'mood', { id }, { reset: true }); }
+  else go('home', {}, { reset: true });
 }
 
-function drawTrend(cv, nights, goal) {
-  const { g, w, h } = setupCanvas(cv, 200);
-  const css = getComputedStyle(document.documentElement), col = k => css.getPropertyValue(k).trim();
-  const list = [...nights].reverse(), N = list.length;
-  if (!N) return;
-  const padL = 28, padB = 22, top = 10, bottom = h - padB, cw = w - padL - 6;
-  const maxH = Math.max(10, goal + 2);
-  const Y = hrs => bottom - (hrs / maxH) * (bottom - top);
-  g.font = '11px ' + col('--sans'); g.fillStyle = col('--mute');
-  [0, 4, 8].concat(maxH > 10 ? [12] : []).forEach(v => { if (v <= maxH) g.fillText(v + 'h', 0, Y(v) + 4); });
-  const slot = cw / N, bw = Math.max(3, Math.min(26, slot * 0.6));
-  list.forEach((n, i) => {
-    const hrs = n.summary.sleepMin / 60, x = padL + slot * i + (slot - bw) / 2;
-    g.fillStyle = hrs >= goal - 0.5 ? col('--teal') : 'rgba(120,179,166,.45)';
-    const y = Y(hrs);
-    g.beginPath(); g.roundRect ? g.roundRect(x, y, bw, bottom - y, [4, 4, 0, 0]) : g.rect(x, y, bw, bottom - y); g.fill();
-    if (N <= 10) { g.fillStyle = col('--mute'); g.textAlign = 'center'; g.fillText(new Date(n.start - 6 * 3600e3).toLocaleDateString('es-GT', { weekday: 'narrow' }), x + bw / 2, h - 5); g.textAlign = 'start'; }
+/* =========================================================
+   ÁNIMO AL DESPERTAR
+   ========================================================= */
+V.mood = (el, p) => {
+  let mood = 0; const morning = new Set();
+  el.innerHTML = `
+  <div style="margin-top:50px">${ic('sun', 40, 'style="color:#E6A85C"')}</div>
+  <h1 style="margin-top:16px">¿Cómo te<br>despertaste?</h1>
+  <p class="mute" style="margin-top:8px">Con tu respuesta aprendo qué noches de verdad te hacen descansar.</p>
+  <div class="row" style="gap:10px;margin-top:28px" id="m-faces">
+    ${[[1, 'frown', 'Cansado', '#D98C8C'], [2, 'meh', 'Normal', '#A89BE0'], [3, 'smile', 'Descansado', '#78B3A6']].map(([v, i, l, c]) => `<button data-m="${v}" data-c="${c}" style="flex:1;border-radius:20px;padding:20px 6px;text-align:center;background:var(--surface);border:1px solid transparent;transition:all .2s">${ic(i, 40, `style="margin:0 auto;color:${c}"`)}<p class="sm" style="margin-top:10px">${l}</p></button>`).join('')}
+  </div>
+  <h3 style="margin:26px 0 10px">¿Algo más de anoche?</h3>
+  <div class="chips" id="m-chips">${MORNING.map(([t, i]) => `<button class="chip" data-t="${t}">${ic(i, 14)}${t}</button>`).join('')}</div>
+  <h3 style="margin:26px 0 10px">¿Qué soñaste?</h3>
+  <textarea id="m-dream" rows="3" placeholder="Escríbelo antes de que se te olvide (opcional)" style="width:100%;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px;color:var(--paper);font:inherit;resize:none;outline:none;-webkit-user-select:text;user-select:text"></textarea>
+  <button class="btn main" id="m-go" style="margin-top:24px">Ver mi noche ${ic('chevR', 20)}</button>
+  <button class="btn" id="m-skip" style="width:100%;color:var(--mute);margin-top:4px">Saltar</button>`;
+  $$('#m-faces button').forEach(b => b.onclick = () => {
+    mood = +b.dataset.m; N.vibrate(15);
+    $$('#m-faces button').forEach(x => { const on = x === b; x.style.borderColor = on ? x.dataset.c : 'transparent'; x.style.background = on ? 'rgba(255,255,255,.07)' : 'var(--surface)'; x.style.transform = on ? 'scale(1.04)' : ''; });
   });
-  // meta
-  g.setLineDash([4, 4]); g.strokeStyle = col('--amber'); g.lineWidth = 1;
-  g.beginPath(); g.moveTo(padL, Y(goal) + .5); g.lineTo(w, Y(goal) + .5); g.stroke(); g.setLineDash([]);
-  // calidad
-  g.strokeStyle = col('--lav'); g.lineWidth = 2; g.beginPath();
-  list.forEach((n, i) => { const x = padL + slot * i + slot / 2, y = top + (1 - n.summary.score / 100) * (bottom - top); i ? g.lineTo(x, y) : g.moveTo(x, y); });
-  g.stroke();
-  g.fillStyle = col('--lav');
-  list.forEach((n, i) => { const x = padL + slot * i + slot / 2, y = top + (1 - n.summary.score / 100) * (bottom - top); g.beginPath(); g.arc(x, y, 3, 0, Math.PI * 2); g.fill(); });
-}
-
-/* =========================================================
-   PANTALLAS
-   ========================================================= */
-async function renderHome() {
-  const hr = new Date().getHours();
-  $('#greet').textContent = hr < 5 ? 'Buenas noches' : hr < 12 ? 'Buenos días' : hr < 19 ? 'Buenas tardes' : 'Buenas noches';
-  const nights = await nightsSorted();
-  const last = nights[0];
-  const sub = $('#greet-sub'), box = $('#last'), list = $('#hist');
-  if (!nights.length) {
-    sub.textContent = 'Graba tu primera noche para ver cómo duermes.';
-    box.innerHTML = '';
-    list.innerHTML = '<li class="empty">Aquí aparecerán tus noches.</li>';
-    return;
-  }
-  const wk = nights.slice(0, 7);
-  sub.textContent = `Esta semana dormiste ${fmtDur(wk.reduce((a, n) => a + n.summary.sleepMin, 0) / wk.length)} en promedio.`;
-  const s = last.summary;
-  box.innerHTML = `<button class="lastnight" style="width:100%;text-align:left;color:inherit;display:block" data-open="${last.id}">
-      <div class="row"><div><p class="muted small">${cap(nightLabel(last.start))}</p><p class="verdict">${verdict(s)}</p>
-      <p class="muted small">${s.noSleep ? '' : fmtDur(s.sleepMin) + ' dormido'}</p></div>
-      <div class="score">${s.score}<small>%</small></div></div>
-      <canvas class="chart" id="mini" style="margin-top:14px"></canvas></button>`;
-  drawNight($('#mini'), last, true);
-  list.innerHTML = nights.map(n => `<li><button data-open="${n.id}"><span><b>${cap(nightLabel(n.start))}</b><br><span class="muted small">${fmtTime(n.start)} a ${fmtTime(n.end)}${n.summary.noSleep ? '' : '. ' + fmtDur(n.summary.sleepMin)}</span></span><span class="q">${n.summary.score}%</span></button></li>`).join('');
-}
-document.addEventListener('click', e => { const b = e.target.closest('[data-open]'); if (b) openDetail(b.dataset.open); });
-
-let clipUrls = [];
-async function openDetail(id) {
-  clipUrls.forEach(u => URL.revokeObjectURL(u)); clipUrls = [];
-  const n = await db.get('nights', id);
-  if (!n) return show('v-home');
-  if (!n.summary || !n.summary.depth) { n.summary = analyze(n); await db.put('nights', n); }
-  const s = n.summary, history = await nightsSorted();
-  const clips = (await db.clipsFor(id)).sort((a, b) => a.t - b.t);
-  const moodTxt = ['', '😩 Cansado', '😐 Normal', '😊 Descansado'][n.mood || 0];
-  const cnt = Object.entries(s.counts).filter(([, v]) => v).map(([k, v]) => `<span>${TYPE_LABEL[k]}: ${v}</span>`).join('');
-  const al = n.alarm && n.alarm.rangAt ? `<p class="muted small" style="margin-top:6px">Alarma sonó a las ${fmtTime(n.alarm.rangAt)}${n.alarm.snoozes ? `, pospuesta ${n.alarm.snoozes} ${n.alarm.snoozes === 1 ? 'vez' : 'veces'}` : ''}.</p>` : '';
-  const el = $('#detail');
-  el.innerHTML = `
-    <div class="topbar"><button class="link" data-back>← Inicio</button></div>
-    <p class="muted">${cap(nightLabel(n.start))}</p>
-    <div class="hero"><div class="score">${s.score}<small>%</small></div><p class="verdict">${verdict(s)}</p>${moodTxt ? `<p class="muted small">Te despertaste: ${moodTxt}</p>` : ''}${al}
-    ${n.recovered ? '<p class="muted small">Esta noche se cerró sola porque la app se interrumpió.</p>' : ''}</div>
-    <div class="graph"><canvas class="chart" id="big"></canvas>
-      <div class="legend"><span><i style="background:var(--teal)"></i>Profundidad estimada</span><span><i style="background:var(--amber)"></i>Ronquidos</span></div></div>
-    <div class="stats">
-      <div><b>${s.onsetTs ? fmtTime(s.onsetTs) : '—'}</b><span>Te dormiste</span></div>
-      <div><b>${s.wakeTs ? fmtTime(s.wakeTs) : '—'}</b><span>Despertaste</span></div>
-      <div><b>${fmtDur(s.sleepMin)}</b><span>Dormido (meta ${s.goal || S.goal} h)</span></div>
-      <div><b>${fmtDur(s.inBed)}</b><span>En cama</span></div>
-      <div><b>${s.noSleep ? '—' : fmtDur(s.latency)}</b><span>Para quedarte dormido</span></div>
-      <div><b>${Math.round((s.eff || 0) * 100)}%</b><span>Eficiencia</span></div>
-      <div><b>${fmtDur(s.deepMin || 0)}</b><span>Sueño profundo</span></div>
-      <div><b>${fmtDur(s.lightMin || 0)}</b><span>Sueño ligero</span></div>
-      <div><b>${fmtDur(s.snoreMin || 0)}</b><span>Roncando (${Math.round((s.snorePct || 0) * 100)}%)</span></div>
-      <div><b>${s.awakenings || 0}</b><span>Despertares</span></div>
-    </div>
-    ${cnt ? `<h3>Lo que se escuchó</h3><div class="counts">${cnt}</div>` : ''}
-    ${(n.tags || []).length ? `<div class="section"><h3>Notas</h3><div class="chips">${n.tags.map(t => `<span class="chip" aria-pressed="true">${t}</span>`).join('')}</div></div>` : ''}
-    <div class="section"><h2>Consejos</h2><ul class="tips">${tipsFor(n, history).map(t => `<li><b>${t.h}</b>${t.b}</li>`).join('')}</ul></div>
-    <div class="section"><h2>Audios de la noche</h2>
-      ${clips.length ? `<ul class="clips">${clips.map(c => { const u = URL.createObjectURL(c.blob); clipUrls.push(u); return `<li><b>${TYPE_LABEL[c.kind] || 'Sonido'}</b> <span class="muted small">${fmtTime(c.t)}</span><audio controls preload="none" src="${u}"></audio></li>`; }).join('')}</ul>`
-      : '<p class="empty">No se guardaron audios. Se graban automáticamente cuando hay ronquidos, hablas dormido, toses o hay ruidos fuertes.</p>'}
-    </div>
-    <div class="section"><button class="btn btn-danger" id="del-night">Borrar esta noche</button></div>`;
-  show('v-detail');
-  requestAnimationFrame(() => drawNight($('#big'), n, false));
-  $('#del-night').onclick = async () => {
-    if (!confirm('¿Borrar esta noche y sus audios?')) return;
-    await deleteNight(id); toast('Noche borrada'); show('v-home');
+  $('#m-chips').addEventListener('click', e => { const c = e.target.closest('[data-t]'); if (!c) return; const t = c.dataset.t; morning.has(t) ? morning.delete(t) : morning.add(t); c.classList.toggle('on', morning.has(t)); });
+  const done = save => {
+    if (save) { const n = getNight(p.id); if (n) { n.mood = mood || null; n.morning = [...morning]; n.dream = $('#m-dream').value.trim(); n.summary = n.summary || analyze(n, S.goal); saveNight(n); checkBadges(); } }
+    go('detail', { id: p.id, fresh: true }, { replace: true });
   };
-}
-
-/* ---------- Tendencias ---------- */
-let trendRange = 7;
-$$('.seg button').forEach(b => b.onclick = () => {
-  trendRange = +b.dataset.r;
-  $$('.seg button').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
-  renderTrends();
-});
-async function renderTrends() {
-  const all = (await nightsSorted()).filter(n => !n.summary.noSleep);
-  const nights = trendRange ? all.slice(0, trendRange) : all;
-  const el = $('#trends');
-  if (nights.length < 2) { el.innerHTML = '<p class="empty">Necesitas al menos 2 noches grabadas para ver tendencias.</p>'; return; }
-  const avg = f => nights.reduce((a, n) => a + f(n), 0) / nights.length;
-  const onsets = nights.filter(n => n.summary.onsetTs).map(n => n.summary.onsetTs);
-  const wakes = nights.map(n => n.summary.wakeTs);
-  const meanClock = arr => arr.map(clockMin).reduce((a, b) => a + b, 0) / arr.length;
-  const sd = onsets.length >= 2 ? clockStd(onsets) : 0;
-  const goal = S.goal;
-  const debt = nights.reduce((a, n) => a + Math.max(0, goal * 60 - n.summary.sleepMin), 0);
-
-  // Impacto de las notas
-  const base = avg(n => n.summary.score);
-  const impact = [];
-  const tagSet = [...new Set(nights.flatMap(n => n.tags || []))];
-  for (const t of tagSet) {
-    const w = nights.filter(n => (n.tags || []).includes(t)), wo = nights.filter(n => !(n.tags || []).includes(t));
-    if (w.length < 2 || wo.length < 1) continue;
-    const a = w.reduce((x, n) => x + n.summary.score, 0) / w.length, b = wo.reduce((x, n) => x + n.summary.score, 0) / wo.length;
-    impact.push({ t, d: a - b, n: w.length });
-  }
-  impact.sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
-  // Ánimo
-  const moods = [1, 2, 3].map(m => { const l = nights.filter(n => n.mood === m); return l.length ? { m, q: l.reduce((a, n) => a + n.summary.score, 0) / l.length, h: l.reduce((a, n) => a + n.summary.sleepMin, 0) / l.length / 60, c: l.length } : null; }).filter(Boolean);
-
-  el.innerHTML = `
-    <div class="graph"><canvas class="chart" id="trend"></canvas>
-      <div class="legend"><span><i style="background:var(--teal)"></i>Horas dormidas</span><span><i style="background:var(--lav)"></i>Calidad</span><span><i style="background:var(--amber)"></i>Meta ${goal} h</span></div></div>
-    <div class="stats">
-      <div><b>${fmtDur(avg(n => n.summary.sleepMin))}</b><span>Dormido en promedio</span></div>
-      <div><b>${Math.round(base)}%</b><span>Calidad promedio</span></div>
-      <div><b>${onsets.length ? fmtClockMin(meanClock(onsets)) : '—'}</b><span>Te duermes en promedio</span></div>
-      <div><b>${fmtClockMin(meanClock(wakes))}</b><span>Despiertas en promedio</span></div>
-      <div><b>±${Math.round(sd)} min</b><span>Regularidad del horario</span></div>
-      <div><b>${fmtDur(debt)}</b><span>Deuda de sueño acumulada</span></div>
-      <div><b>${Math.round(avg(n => n.summary.snorePct || 0) * 100)}%</b><span>Ronquido promedio</span></div>
-      <div><b>${avg(n => n.summary.awakenings || 0).toFixed(1)}</b><span>Despertares por noche</span></div>
-    </div>
-    <div class="section"><h2>Qué afecta tu sueño</h2>
-      ${impact.length ? `<ul class="impact">${impact.map(i => `<li><span>${i.t} <span class="muted small">(${i.n} noches)</span></span><span class="${i.d >= 0 ? 'up' : 'down'}">${i.d >= 0 ? '+' : '−'}${Math.abs(Math.round(i.d))}% calidad</span></li>`).join('')}</ul>`
-      : '<p class="empty">Marca notas antes de dormir (café, ejercicio, estrés…). Con 2 noches por nota verás cómo te afectan.</p>'}
-    </div>
-    ${moods.length ? `<div class="section"><h2>Cómo te sentiste</h2><ul class="impact">${moods.map(m => `<li><span>${['', '😩 Cansado', '😐 Normal', '😊 Descansado'][m.m]} <span class="muted small">(${m.c})</span></span><span>${Math.round(m.q)}%, ${m.h.toFixed(1)} h</span></li>`).join('')}</ul></div>` : ''}
-    <p class="muted small" style="margin-top:20px">Una deuda de sueño grande no se paga en una sola noche; mejor 30–60 min extra varios días seguidos.</p>`;
-  requestAnimationFrame(() => drawTrend($('#trend'), nights, goal));
-}
-
-/* ---------- Preparar la noche ---------- */
-function selectedTags() { return $$('#tags .chip').filter(c => c.getAttribute('aria-pressed') === 'true').map(c => c.textContent); }
-function renderSetup() {
-  $('#a-on').checked = S.alarmOn; $('#a-time').value = S.wake; $('#a-win').value = String(S.win);
-  $('#aid').value = S.aid; $('#aid-min').value = String(S.aidMin); $('#aid-vol').value = S.aidVol;
-  $('#tags').innerHTML = TAGS.map(t => `<button class="chip" type="button" aria-pressed="false">${t}</button>`).join('');
-  $('#a-opts').style.opacity = S.alarmOn ? 1 : .4;
-  updateBedHint();
-}
-function updateBedHint() {
-  const on = $('#a-on').checked, el = $('#bed-hint');
-  if (!on) { el.textContent = `Tu meta es dormir ${S.goal} horas.`; return; }
-  const [h, m] = ($('#a-time').value || S.wake).split(':').map(Number);
-  const total = h * 60 + m - S.goal * 60 - 15;
-  el.textContent = `Para dormir ${S.goal} h y despertar a las ${$('#a-time').value}, lo ideal es acostarte a las ${fmtClockMin((total + 2880) % 1440)}.`;
-}
-$('#tags').addEventListener('click', e => { const c = e.target.closest('.chip'); if (c) c.setAttribute('aria-pressed', c.getAttribute('aria-pressed') === 'true' ? 'false' : 'true'); });
-$('#a-on').onchange = () => { $('#a-opts').style.opacity = $('#a-on').checked ? 1 : .4; updateBedHint(); };
-$('#a-time').oninput = updateBedHint;
-$('#go-setup').onclick = () => { renderSetup(); show('v-setup'); };
-$('#start').onclick = startNight;
-
-/* ---------- Ajustes ---------- */
-function renderSettings() { $('#s-goal').value = S.goal; $('#s-sens').value = S.sens; }
-$('#s-goal').onchange = e => { const v = clamp(+e.target.value || 8, 5, 11); S.goal = v; e.target.value = v; saveSettings(); toast('Meta guardada'); };
-$('#s-sens').onchange = e => { S.sens = e.target.value; saveSettings(); toast('Sensibilidad guardada'); };
-
-let test = null;
-$('#test-btn').onclick = async () => {
-  if (test) { stopTest(); return; }
-  try { test = await openMic(); } catch (e) { toast('Necesito permiso del micrófono.'); return; }
-  test.D = newDetector();
-  $('#test-btn').textContent = 'Detener prueba';
-  $('#test-out').textContent = 'Calibrando, quédate en silencio 3 segundos…';
-  test.iv = setInterval(() => {
-    const f = readFrame(test);
-    detect(test.D, f, Date.now(), SENS[S.sens], e => {
-      const ty = e.type === 'posible' ? 'Sonido corto (si se repite cada pocos segundos será ronquido)' : TYPE_LABEL[e.type];
-      $('#test-out').textContent = `Detectado: ${ty}, ${e.d} s`;
-    });
-    if (test.D.base !== null) {
-      $('#meter').style.width = clamp((f.db - test.D.base) / 30) * 100 + '%';
-      if ($('#test-out').textContent.startsWith('Calibrando')) $('#test-out').textContent = 'Listo. Haz un sonido.';
-    }
-  }, 100);
+  $('#m-go').onclick = () => done(true);
+  $('#m-skip').onclick = () => done(false);
 };
-function stopTest() {
-  if (!test) return;
-  clearInterval(test.iv);
-  test.stream.getTracks().forEach(t => t.stop());
-  test.ctx.close();
-  test = null;
-  $('#test-btn').textContent = 'Empezar prueba';
-  $('#meter').style.width = '0';
-}
-$$('#nav button').forEach(b => b.addEventListener('click', stopTest));
-
-$('#exp').onclick = async () => {
-  const nights = await db.all('nights');
-  const blob = new Blob([JSON.stringify({ app: 'sueno', v: 1, settings: S, nights }, null, 0)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `sueno-respaldo-${new Date().toISOString().slice(0, 10)}.json`;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  toast('Respaldo exportado (sin audios)');
-};
-$('#imp').onclick = () => $('#imp-file').click();
-$('#imp-file').onchange = async e => {
-  const file = e.target.files[0]; if (!file) return;
-  try {
-    const data = JSON.parse(await file.text());
-    if (data.app !== 'sueno' || !Array.isArray(data.nights)) throw new Error();
-    for (const n of data.nights) await db.put('nights', n);
-    toast(`Importadas ${data.nights.length} noches`);
-  } catch (err) { toast('Ese archivo no es un respaldo de Sueño.'); }
-  e.target.value = '';
-};
-$('#wipe').onclick = async () => {
-  if (!confirm('¿Borrar todas las noches y audios? No se puede deshacer.')) return;
-  await db.clear('nights'); await db.clear('clips'); toast('Datos borrados');
-};
-
-/* ---------- Recuperar noches interrumpidas ---------- */
-async function recover() {
-  const open = (await db.all('nights')).filter(n => n.status === 'recording');
-  for (const n of open) {
-    if (n.minutes.length < 5) { await deleteNight(n.id); continue; }
-    n.end = n.start + n.minutes.length * 60000;
-    n.status = 'done'; n.recovered = true;
-    n.summary = analyze(n);
-    await db.put('nights', n);
-  }
-}
-
-/* ---------- Avisar si se intenta salir grabando ---------- */
-window.addEventListener('beforeunload', e => { if (sess) { e.preventDefault(); e.returnValue = ''; } });
-
-/* ---------- Arranque ---------- */
-(async () => {
-  if (!navigator.mediaDevices || !window.indexedDB) toast('Este navegador no es compatible. Usa Chrome en Android.');
-  try { await recover(); } catch (e) {}
-  renderHome();
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
-})();
-let lastW = innerWidth;
-window.addEventListener('resize', () => { if (Math.abs(innerWidth - lastW) < 20) return; lastW = innerWidth; if (current === 'v-home') renderHome(); });
